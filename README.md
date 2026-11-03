@@ -67,7 +67,8 @@ To remove, run `./uninstall.sh`.
 | **Send** | Drop files on the icon or popup → click the device. |
 | **Receive** | Press **Receive for N min**, then on the Apple device choose your PC in the AirDrop share sheet. |
 | **From Dolphin** | Right-click files → *Send via AirDrop* → device. |
-| **Command line** | `kdrop send --to "My iPad" photo.jpg`, `kdrop receive`, `kdrop browse`, `kdrop stop`, `kdrop --help` |
+| **Stop / restart** | Right-click the widget → *Stop AirDrop & Reconnect Wi-Fi* or *Restart KDrop* |
+| **Command line** | `kdrop send --to "My iPad" photo.jpg`, `kdrop receive`, `kdrop browse`, `kdrop stop`, `kdrop restart`, `kdrop --help` |
 
 ## Wi-Fi interruptions
 

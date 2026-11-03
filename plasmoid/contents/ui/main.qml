@@ -45,6 +45,17 @@ PlasmoidItem {
             text: "KDrop Settings…"
             icon.name: "configure"
             onTriggered: { root.showSettings = true; root.expanded = true }
+        },
+        PlasmaCore.Action {
+            text: "Stop AirDrop && Reconnect Wi-Fi"
+            icon.name: "network-wireless"
+            enabled: root.busy
+            onTriggered: root.run(["stop"])
+        },
+        PlasmaCore.Action {
+            text: "Restart KDrop"
+            icon.name: "view-refresh"
+            onTriggered: { root.pending = []; root.showSettings = false; root.run(["restart"]) }
         }
     ]
 

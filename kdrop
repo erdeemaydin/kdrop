@@ -12,6 +12,7 @@ Usage:
   kdrop receive [MINUTES]            be visible; ends MINUTES after the last transfer
   kdrop browse                       look for nearby devices and remember them
   kdrop stop                         stop everything and give Wi-Fi back now
+  kdrop restart                      stop everything and reset KDrop's state
   kdrop status                       state as JSON (used by the widget)
   kdrop set KEY VALUE                change a setting (see `kdrop settings`)
   kdrop settings                     show settings
@@ -582,9 +583,15 @@ def main(argv):
         return launch("receive", [str(int(rest[0]))] if rest else [])
     if cmd == "browse":
         return launch("browse", [])
-    if cmd == "stop":
+    if cmd in ("stop", "restart"):
         systemctl("stop", *JOB_UNITS.values())
         radio_down()
+        if cmd == "restart":   # also forget job state and failed units, rebuild the Dolphin menu
+            systemctl("reset-failed", *JOB_UNITS.values(), RADIO_UNIT)
+            for f in RUN.glob("*.json"):
+                f.unlink(missing_ok=True)
+            shutil.rmtree(RUN / "zips", ignore_errors=True)
+            write_servicemenu(load_conf())
         return 0
     if cmd == "status":
         status()
