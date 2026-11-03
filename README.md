@@ -13,7 +13,7 @@ KDrop is a front end for [**owly**](https://github.com/t4t5/owly), which impleme
 
 - **Send:** drop files on the panel icon (or click to pick them), then click the device to send to. Folders are zipped automatically. Progress and results appear in the popup and as notifications.
 - **Explicit receivers only:** KDrop never sends to "whoever answers first". You pick the device every time, and if a different device answers than the one you picked, the send is cancelled before anything is offered.
-- **Receive:** one click makes your PC visible for a few minutes. Each incoming transfer asks **Accept / Always accept from this device / Decline**. Received files get *Open* and *Show in folder* actions.
+- **Receive:** one click makes your PC visible, for 30 seconds up to 30 minutes (pick it next to the button). Each incoming transfer asks **Accept / Always accept from this device / Decline**. Received files get *Open* and *Show in folder* actions.
 - **Trusted devices:** your own devices can skip the prompt. Manage the list in Settings.
 - **File manager integration:** right-click any file → *Send via AirDrop* → your device. Works in Dolphin (KDE), Files (GNOME), Nemo (Cinnamon) and Caja (MATE).
 - **Not only Plasma:** on GNOME and other desktops, KDrop adds *Find devices* and *Receive files* to the app menu and reports progress as notifications. See [Other desktops](#other-desktops).
@@ -70,10 +70,10 @@ To remove, run `./uninstall.sh`.
 |---|---|
 | **Find your devices** | Set AirDrop on the iPhone/iPad to *Everyone for 10 minutes*, then press **Search**. Found devices are saved. |
 | **Send** | Drop files on the icon or popup → click the device. |
-| **Receive** | Press **Receive for N min**, then on the Apple device choose your PC in the AirDrop share sheet. |
+| **Receive** | Pick how long (30 s – 30 min) next to **Receive** and press it, then on the Apple device choose your PC in the AirDrop share sheet. The time restarts after each transfer. |
 | **From the file manager** | Right-click files → *Send via AirDrop* → device (Dolphin, Files, Nemo, Caja). |
 | **Stop / restart** | Right-click the widget → *Stop AirDrop & Reconnect Wi-Fi* or *Restart KDrop* |
-| **Command line** | `kdrop send --to "My iPad" photo.jpg`, `kdrop receive`, `kdrop browse`, `kdrop stop`, `kdrop restart`, `kdrop --help` |
+| **Command line** | `kdrop send --to "My iPad" photo.jpg`, `kdrop receive 30s`, `kdrop browse`, `kdrop stop`, `kdrop restart`, `kdrop --help` |
 
 ## Wi-Fi cards and interruptions
 
@@ -112,9 +112,17 @@ The Plasma widget is the easiest way to use KDrop, but everything also works wit
 |---|---|
 | **KDrop: Find devices** (app menu) | Looks for nearby devices and saves them. A notification shows what was found. |
 | **Send** | Right-click files → *Send via AirDrop* → device. In GNOME Files it's under *Scripts*. |
-| **KDrop: Receive files** (app menu) | Makes your PC visible for a few minutes. Each transfer asks Accept / Always accept / Decline in a dialog. |
+| **KDrop: Receive files** (app menu) | Makes your PC visible (3 minutes by default). Right-click the app icon for 30 s, 1, 5 or 10 minutes. Each transfer asks Accept / Always accept / Decline in a dialog. |
 
-Everything else (progress, results, errors) arrives as notifications. Settings can be changed with `kdrop set` (`kdrop --help` lists them), for example `kdrop set receive_minutes 5`.
+Everything else (progress, results, errors) arrives as notifications. Settings are changed with `kdrop set` (`kdrop settings` shows them all):
+
+```sh
+kdrop set receive_seconds 2m      # default receive time: 30s, 2m, 1m30s …
+kdrop set theme dark              # dialog colours: system (default), dark or light
+kdrop set dir ~/Downloads         # where received files go
+```
+
+**Dark mode:** the accept dialog follows your desktop's dark/light setting automatically. If it doesn't match (for example because a custom GTK theme forces light colours), choose with `kdrop set theme dark` or `light`. On Plasma, the widget and its dialogs follow your Plasma colour scheme.
 
 Xfce's Thunar has no menu file KDrop can generate. Add a custom action there by hand (*Edit → Configure custom actions*) with the command `kdrop send --to "Device name" %F`.
 

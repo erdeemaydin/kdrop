@@ -43,6 +43,23 @@ Exec="$BIN" receive --notify
 Icon=folder-download
 Terminal=false
 Categories=Network;FileTransfer;
+Actions=s30;m1;m5;m10;
+
+[Desktop Action s30]
+Name=Receive for 30 seconds
+Exec="$BIN" receive 30s --notify
+
+[Desktop Action m1]
+Name=Receive for 1 minute
+Exec="$BIN" receive 1m --notify
+
+[Desktop Action m5]
+Name=Receive for 5 minutes
+Exec="$BIN" receive 5m --notify
+
+[Desktop Action m10]
+Name=Receive for 10 minutes
+Exec="$BIN" receive 10m --notify
 DESKTOP
     cat > "$APPS/kdrop-browse.desktop" <<DESKTOP
 [Desktop Entry]

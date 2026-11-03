@@ -14,7 +14,7 @@ PlasmoidItem {
 
     readonly property string helper: "\"$HOME/.local/bin/kdrop\""
     property var st: ({ radio: false, wifi: "connected", jobs: {}, devices: [], trusted: [],
-                        receive_minutes: 3, dir: "", host: "", owly: true })
+                        receive_seconds: 180, dir: "", host: "", owly: true })
     // files waiting for you to click a device; nothing is sent before that click
     property var pending: []
     property bool showSettings: false
@@ -66,6 +66,10 @@ PlasmoidItem {
         refreshSoon.restart()
     }
     function poll() { exec.connectSource(helper + " status #" + Date.now()) }
+    function fmtDuration(sec) {
+        const m = Math.floor(sec / 60), s = sec % 60
+        return !m ? s + " s" : !s ? m + " min" : m + " min " + s + " s"
+    }
     function isTrusted(name) { return (st.trusted || []).indexOf(name) >= 0 }
 
     function addFiles(urls) {
@@ -363,12 +367,20 @@ PlasmoidItem {
             Kirigami.Separator { Layout.fillWidth: true }
 
             // ---- receive
-            PC3.Button {
+            RowLayout {
                 Layout.fillWidth: true
-                icon.name: root.receiving ? "process-stop" : "folder-download"
-                text: root.receiving ? "Stop receiving"
-                                     : "Receive for " + root.st.receive_minutes + " min"
-                onClicked: root.receiving ? root.run(["stop"]) : root.run(["receive"])
+                PC3.Button {
+                    Layout.fillWidth: true
+                    icon.name: root.receiving ? "process-stop" : "folder-download"
+                    text: root.receiving ? "Stop receiving" : "Receive"
+                    onClicked: root.receiving ? root.run(["stop"]) : root.run(["receive"])
+                }
+                DurationBox {
+                    app: root
+                    visible: !root.receiving
+                    PC3.ToolTip.text: "How long to stay visible after the last transfer"
+                    PC3.ToolTip.visible: hovered
+                }
             }
             PC3.Label {
                 Layout.fillWidth: true

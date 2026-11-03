@@ -9,7 +9,8 @@ gives it back to NetworkManager straight after.
 
 Usage:
   kdrop send --to NAME FILE|URL...   send to a device you chose (folders are zipped)
-  kdrop receive [MINUTES]            be visible; ends MINUTES after the last transfer
+  kdrop receive [TIME]               be visible; ends TIME after the last transfer
+                                     (e.g. 30s, 2m; a plain number means minutes)
   kdrop browse                       look for nearby devices and remember them
   kdrop stop                         stop everything and give Wi-Fi back now
   kdrop restart                      stop everything and reset KDrop's state
@@ -35,7 +36,7 @@ import threading
 import time
 import urllib.parse
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 APP = "KDrop"
 HOME = pathlib.Path.home()
 RUN = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "kdrop"
@@ -58,13 +59,20 @@ JOB_UNITS = {"send": "kdrop-send.service",
 # setting: (default, validator)
 SETTINGS = {
     "dir": (str(HOME / "Downloads" / "AirDrop"), str),
-    "receive_minutes": (3, lambda v: max(1, min(30, int(v)))),
+    "receive_seconds": (180, lambda v: max(15, min(1800, int(v)))),
+    "theme": ("system", lambda v: one_of(v, "system", "dark", "light")),   # non-KDE dialogs
     "name": ("", lambda v: str(v).strip()[:60]),          # name others see; empty = host name
     "auto_accept_trusted": (True, lambda v: str(v).lower() in ("1", "true", "yes", "on")),
     "keep_on_seconds": (0, lambda v: max(0, min(300, int(v)))),   # radio stays up after a send/search
     "browse_seconds": (10, lambda v: max(3, min(30, int(v)))),
 }
 LISTS = ("devices", "trusted")
+
+
+def one_of(v, *allowed):
+    if v not in allowed:
+        raise ValueError("use one of: " + ", ".join(allowed))
+    return v
 
 RUN.mkdir(parents=True, exist_ok=True)
 
@@ -76,9 +84,14 @@ def load_conf():
     src = CONF if CONF.exists() else CONFIG_HOME / "owlydrop.json"   # pre-rename config
     try:
         stored = json.loads(src.read_text())
+        if "receive_minutes" in stored and "receive_seconds" not in stored:   # before 1.1
+            stored["receive_seconds"] = int(stored["receive_minutes"]) * 60
         for k, v in stored.items():
             if k in SETTINGS:
-                c[k] = SETTINGS[k][1](v)
+                try:
+                    c[k] = SETTINGS[k][1](v)
+                except (ValueError, TypeError):
+                    pass                      # keep the default for a bad value
             elif k in LISTS and isinstance(v, list):
                 c[k] = [str(x) for x in v]
     except (OSError, ValueError, TypeError):
@@ -92,6 +105,22 @@ def save_conf(c):
     tmp.write_text(json.dumps(c, indent=2, ensure_ascii=False))
     tmp.replace(CONF)
     write_menus(c)
+
+
+def parse_duration(v):
+    """'30s', '2m', '1m30s' or a plain number of minutes → seconds."""
+    v = str(v).strip().lower()
+    if re.fullmatch(r"\d+", v):
+        return int(v) * 60
+    m = re.fullmatch(r"(?:(\d+)\s*m(?:in)?)?\s*(?:(\d+)\s*s(?:ec)?)?", v)
+    if not m or not any(m.groups()):
+        raise ValueError(f"not a duration: {v}")
+    return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
+
+
+def fmt_duration(sec):
+    m, s = divmod(int(sec), 60)
+    return f"{s} s" if not m else f"{m} min" if not s else f"{m} min {s} s"
 
 
 def same_name(a, b):
@@ -428,6 +457,46 @@ def job_send(items, to):
 ALWAYS = "Always accept from this device"
 
 
+def system_dark():
+    """True/False from the desktop's dark-style preference (freedesktop portal, then GNOME),
+    None when the desktop doesn't say."""
+    try:
+        out = subprocess.run(["gdbus", "call", "--session", "--dest", "org.freedesktop.portal.Desktop",
+                              "--object-path", "/org/freedesktop/portal/desktop", "--method",
+                              "org.freedesktop.portal.Settings.ReadOne",
+                              "org.freedesktop.appearance", "color-scheme"],
+                             capture_output=True, text=True, timeout=3).stdout
+        m = re.search(r"uint32 (\d)", out)
+        if m and m.group(1) in "12":
+            return m.group(1) == "1"          # 1 = prefer dark, 2 = prefer light
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        out = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                             capture_output=True, text=True, timeout=3).stdout
+        if "dark" in out or "light" in out:
+            return "dark" in out
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def gtk_dialog_env():
+    """Environment for zenity so it matches the chosen theme (Settings → theme), even when
+    a custom GTK theme in ~/.config/gtk-4.0 would force it light or dark."""
+    theme = load_conf()["theme"]
+    dark = system_dark() if theme == "system" else theme == "dark"
+    env = dict(os.environ)
+    if dark is None:
+        return env
+    clean = RUN / "gtk-config"            # empty config dir: no user gtk.css overrides
+    clean.mkdir(exist_ok=True)
+    env.pop("GTK_THEME", None)
+    env.update(XDG_CONFIG_HOME=str(clean),
+               ADW_DEBUG_COLOR_SCHEME="force-dark" if dark else "force-light")
+    return env
+
+
 def ask_accept(sender, files):
     """Accept / Always accept / Decline. Uses kdialog (KDE), zenity (GNOME and most others),
     or a notification with buttons as a last resort. Declines by itself after 60 s."""
@@ -446,7 +515,7 @@ def ask_accept(sender, files):
                                 "--no-markup", "--width", "420", "--timeout", "60",
                                 "--ok-label", "Accept", "--cancel-label", "Decline",
                                 "--extra-button", ALWAYS],
-                               capture_output=True, text=True, timeout=65)
+                               capture_output=True, text=True, timeout=65, env=gtk_dialog_env())
             if r.returncode == 0:
                 return "yes"
             return "always" if r.stdout.strip() == ALWAYS else "no"
@@ -459,9 +528,9 @@ def ask_accept(sender, files):
         return "no"
 
 
-def job_receive(minutes):
+def job_receive(seconds):
     conf = load_conf()
-    minutes = minutes or conf["receive_minutes"]
+    seconds = seconds or conf["receive_seconds"]
     dest = pathlib.Path(conf["dir"]).expanduser()
     dest.mkdir(parents=True, exist_ok=True)
     stop = {"flag": False}
@@ -478,9 +547,9 @@ def job_receive(minutes):
         proc = subprocess.Popen([OWLY, "receive", "--dir", str(dest), *name_args(conf)],
                                 stdin=slave, stdout=slave, stderr=slave, close_fds=True)
         os.close(slave)
-        deadline = time.time() + minutes * 60
+        deadline = time.time() + seconds
         sender, offered, answered = "", [], True
-        notify_progress(f"Visible as “{display_name(conf)}” for {minutes} min",
+        notify_progress(f"Visible as “{display_name(conf)}” for {fmt_duration(seconds)}",
                         "On the iPhone, iPad or Mac: Share → AirDrop → this computer.",
                         "network-wireless")
         for line, partial in stream(master):
@@ -504,7 +573,7 @@ def job_receive(minutes):
                         conf["devices"].append(sender)
                     save_conf(conf)
                 os.write(master, b"y\n" if answer in ("yes", "always") else b"n\n")
-                deadline = time.time() + minutes * 60
+                deadline = time.time() + seconds
                 continue
             if line is None:
                 continue
@@ -512,7 +581,7 @@ def job_receive(minutes):
             m = re.match(r'"(.+?)" \(".*?"\) wants to send', line)
             if m:
                 sender, offered, answered = m.group(1), [], False
-                deadline = time.time() + minutes * 60
+                deadline = time.time() + seconds
                 continue
             m = re.match(r'"(.+?)" \S+', line)
             if m and not answered:
@@ -520,7 +589,7 @@ def job_receive(minutes):
                 continue
             if line.startswith("/") and os.path.exists(line):
                 received.append(line)
-                deadline = time.time() + minutes * 60
+                deadline = time.time() + seconds
                 path = pathlib.Path(line)
                 notify_async(f"Received from {sender or 'AirDrop'}", path.name, "folder-download",
                              actions={"open": "Open", "folder": "Show in folder"},
@@ -661,7 +730,7 @@ def main(argv):
         if kind == "send":
             return job_send(rest[2:], rest[1]) if rest[:1] == ["--to"] else job_send(rest, None)
         if kind == "receive":
-            return job_receive(int(rest[0]) if rest else 0)
+            return job_receive(int(rest[0]) if rest else 0)   # seconds
         return job_browse()
     if cmd == "--version":
         print(VERSION)
@@ -674,9 +743,14 @@ def main(argv):
             return 2
         return launch("send", rest)
     if cmd == "receive":
-        if rest[:1] == ["--minutes"]:
+        if rest[:1] in (["--minutes"], ["--time"]):
             rest = rest[1:]
-        return launch("receive", [str(int(rest[0]))] if rest else [])
+        try:
+            secs = max(15, min(1800, parse_duration(rest[0]))) if rest else 0
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            return 2
+        return launch("receive", [str(secs)] if secs else [])
     if cmd == "browse":
         return launch("browse", [])
     if cmd in ("stop", "restart"):
@@ -696,11 +770,14 @@ def main(argv):
     if cmd == "settings":
         print(json.dumps(conf, indent=2, ensure_ascii=False))
         return 0
+    if cmd == "set" and len(rest) == 2 and rest[0] == "receive_minutes":   # old name
+        rest = ["receive_seconds", str(int(rest[1]) * 60)]
     if cmd == "set" and len(rest) == 2 and rest[0] in SETTINGS:
         try:
-            conf[rest[0]] = SETTINGS[rest[0]][1](rest[1])
-        except ValueError:
-            print(f"bad value for {rest[0]}", file=sys.stderr)
+            val = parse_duration(rest[1]) if rest[0] == "receive_seconds" and not rest[1].isdigit() else rest[1]
+            conf[rest[0]] = SETTINGS[rest[0]][1](val)
+        except ValueError as e:
+            print(f"bad value for {rest[0]}: {e}", file=sys.stderr)
             return 2
     elif cmd == "trust" and rest:
         for lst in ("trusted", "devices"):

@@ -54,12 +54,8 @@ ColumnLayout {
 
         PC3.Label { text: "Stay visible:" }
         RowLayout {
-            PC3.SpinBox {
-                from: 1; to: 30
-                value: page.st.receive_minutes || 3
-                onValueModified: page.app.run(["set", "receive_minutes", String(value)])
-            }
-            PC3.Label { text: "min after the last transfer" }
+            DurationBox { app: page.app }
+            PC3.Label { text: "after the last transfer" }
         }
     }
 
