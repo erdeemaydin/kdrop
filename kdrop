@@ -271,12 +271,17 @@ def apply_mode(mode, launch_app=True):
             WINDOWED_ENTRY.unlink()
     except OSError:
         pass
-    # put the widget back next to the system tray of the first panel that has one
+    # put the widget back into a panel (the main screen's, preferably)
     out = plasma_script(f"""var have = false;
         panels().forEach(function (p) {{ if (p.widgets("{PLASMOID}").length) have = true }});
         if (!have && panels().length) {{
-            var target = panels()[0];
-            panels().forEach(function (p) {{ if (p.widgets("org.kde.plasma.systemtray").length) target = p }});
+            // the main screen's panel with a system tray, else any panel with one, else the first
+            var target = null;
+            panels().forEach(function (p) {{
+                if (!p.widgets("org.kde.plasma.systemtray").length) return;
+                if (!target || (p.screen == 0 && target.screen != 0)) target = p;
+            }});
+            if (!target) target = panels()[0];
             target.addWidget("{PLASMOID}");
         }}
         print(have ? "present" : "added")""")

@@ -20,8 +20,11 @@ PlasmoidItem {
     // files waiting for you to click a device; nothing is sent before that click
     property var pending: []
     readonly property url logo: Qt.resolvedUrl("../icons/kdrop.svg")
-    // running as an app window (plasmawindowed): the title bar already shows logo and name
-    readonly property bool windowed: Plasmoid.formFactor === PlasmaCore.Types.Application
+    // Anywhere but a panel (an app window via plasmawindowed, or the desktop) the header leaves
+    // out logo and name: a window's title bar shows them already. (plasmawindowed reports its
+    // form factor as Application or Planar depending on saved state, so test for a panel.)
+    readonly property bool windowed: Plasmoid.formFactor !== PlasmaCore.Types.Horizontal
+                                     && Plasmoid.formFactor !== PlasmaCore.Types.Vertical
 
     readonly property var sendJob: st.jobs.send || null
     readonly property var recvJob: st.jobs.receive || null

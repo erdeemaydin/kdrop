@@ -5,8 +5,8 @@
 **AirDrop for KDE Plasma** (and other Linux desktops). A panel widget for sending files to and receiving files from iPhone, iPad and Mac, using real AirDrop, with no app on the Apple device.
 
 <p>
-  <img src="docs/main.png" width="420" alt="KDrop popup: two files selected, waiting for a device to be chosen">
-  <img src="docs/settings.png" width="420" alt="KDrop settings: receive folder, trusted devices, Wi-Fi options">
+  <img src="docs/main.png" width="440" alt="KDrop: two files picked, waiting for you to choose the device to send them to">
+  <img src="docs/settings.png" width="300" alt="KDrop settings window: widget or app, receive folder and time, trusted devices, Wi-Fi options, Save">
 </p>
 
 KDrop is a front end for [**owly**](https://github.com/t4t5/owly), which implements Apple's AWDL radio link and the AirDrop protocol on Linux. owly does the hard part. KDrop makes it a two-click job and keeps Wi-Fi interruptions as short as possible.
