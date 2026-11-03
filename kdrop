@@ -1,0 +1,621 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: MIT
+"""kdrop - the helper behind the KDrop Plasma widget.
+
+Sends and receives files with nearby Apple devices over AirDrop, using the
+`owly` CLI (https://github.com/t4t5/owly). On most Wi-Fi cards AirDrop needs
+the card to itself, so KDrop only takes it while a transfer needs it and
+gives it back to NetworkManager straight after.
+
+Usage:
+  kdrop send --to NAME FILE|URL...   send to a device you chose (folders are zipped)
+  kdrop receive [MINUTES]            be visible; ends MINUTES after the last transfer
+  kdrop browse                       look for nearby devices and remember them
+  kdrop stop                         stop everything and give Wi-Fi back now
+  kdrop status                       state as JSON (used by the widget)
+  kdrop set KEY VALUE                change a setting (see `kdrop settings`)
+  kdrop settings                     show settings
+  kdrop trust NAME | untrust NAME    accept from NAME without asking (or stop doing so)
+  kdrop forget NAME                  remove a saved device
+"""
+import json
+import os
+import pathlib
+import pty
+import re
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+
+VERSION = "1.0.0"
+APP = "KDrop"
+HOME = pathlib.Path.home()
+RUN = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "kdrop"
+CONFIG_HOME = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
+CONF = CONFIG_HOME / "kdrop.json"
+DATA_HOME = pathlib.Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share"))
+SERVICEMENU = DATA_HOME / "kio/servicemenus/kdrop.desktop"
+OWLY = shutil.which("owly") or "/usr/bin/owly"
+SELF = str(pathlib.Path(__file__).resolve())
+
+RADIO_UNIT = "kdrop-radio.service"
+RADIO_OFF = "kdrop-radio-off"          # timer that gives Wi-Fi back after the keep-on delay
+JOB_UNITS = {"send": "kdrop-send.service",
+             "receive": "kdrop-receive.service",
+             "browse": "kdrop-browse.service"}
+
+# setting: (default, validator)
+SETTINGS = {
+    "dir": (str(HOME / "Downloads" / "AirDrop"), str),
+    "receive_minutes": (3, lambda v: max(1, min(30, int(v)))),
+    "name": ("", lambda v: str(v).strip()[:60]),          # name others see; empty = host name
+    "auto_accept_trusted": (True, lambda v: str(v).lower() in ("1", "true", "yes", "on")),
+    "keep_on_seconds": (0, lambda v: max(0, min(300, int(v)))),   # radio stays up after a send/search
+    "browse_seconds": (10, lambda v: max(3, min(30, int(v)))),
+}
+LISTS = ("devices", "trusted")
+
+RUN.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------- settings
+def load_conf():
+    c = {k: d for k, (d, _) in SETTINGS.items()}
+    c.update({k: [] for k in LISTS})
+    src = CONF if CONF.exists() else CONFIG_HOME / "owlydrop.json"   # pre-rename config
+    try:
+        stored = json.loads(src.read_text())
+        for k, v in stored.items():
+            if k in SETTINGS:
+                c[k] = SETTINGS[k][1](v)
+            elif k in LISTS and isinstance(v, list):
+                c[k] = [str(x) for x in v]
+    except (OSError, ValueError, TypeError):
+        pass
+    return c
+
+
+def save_conf(c):
+    CONF.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CONF.with_suffix(".tmp")
+    tmp.write_text(json.dumps(c, indent=2, ensure_ascii=False))
+    tmp.replace(CONF)
+    write_servicemenu(c)
+
+
+def same_name(a, b):
+    """Device names compare alike whatever apostrophe the device uses (’ vs ')."""
+    n = lambda x: re.sub(r"[‘’ʼ`]", "'", x or "").strip().casefold()
+    return n(a) == n(b)
+
+
+def in_list(name, lst):
+    return any(same_name(name, x) for x in lst)
+
+
+def display_name(c):
+    return c["name"] or os.uname().nodename
+
+
+def name_args(c):
+    return ["--name", c["name"]] if c["name"] else []
+
+
+def write_servicemenu(c):
+    """Dolphin right-click menu: one entry per saved device, so you always see where it goes."""
+    esc = lambda x: '"' + re.sub(r'(["`$\\])', r"\\\1", x) + '"'
+    lines = ["[Desktop Entry]", "Type=Service",
+             "MimeType=application/octet-stream;inode/directory;",
+             "X-KDE-Submenu=Send via AirDrop"]
+    devs = c["devices"]
+    ids = [f"dev{i}" for i in range(len(devs))] or ["none"]
+    lines.append("Actions=" + ";".join(ids) + ";")
+    for i, d in enumerate(devs):
+        lines += ["", f"[Desktop Action dev{i}]", f"Name={d}", "Icon=computer-tablet",
+                  f"Exec={esc(SELF)} send --to {esc(d)} %U"]
+    if not devs:
+        lines += ["", "[Desktop Action none]", "Name=No devices yet (search in the KDrop widget)",
+                  "Icon=dialog-information", f"Exec={esc(SELF)} send %U"]
+    try:
+        SERVICEMENU.parent.mkdir(parents=True, exist_ok=True)
+        SERVICEMENU.write_text("\n".join(lines) + "\n")
+        SERVICEMENU.chmod(0o755)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------- utilities
+def write_job(kind, **kw):
+    kw.update(kind=kind, time=time.time())
+    p = RUN / f"{kind}.json"
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(kw, ensure_ascii=False))
+    tmp.replace(p)
+
+
+def read_job(kind):
+    try:
+        return json.loads((RUN / f"{kind}.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def systemctl(*args):
+    return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True)
+
+
+def unit_active(unit):
+    return systemctl("is-active", "--quiet", unit).returncode == 0
+
+
+def notify(title, body="", icon="document-send", actions=None):
+    """Desktop notification; with actions it blocks and returns the chosen key."""
+    cmd = ["notify-send", "-a", APP, "-i", icon, title, body]
+    for key, label in (actions or {}).items():
+        cmd += ["-A", f"{key}={label}"]
+    if not actions:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return ""
+    try:
+        return subprocess.run(cmd[:1] + ["--wait"] + cmd[1:], capture_output=True,
+                              text=True, timeout=600).stdout.strip()
+    except subprocess.TimeoutExpired:
+        return ""
+
+
+def notify_async(*a, on_action=None, **kw):
+    def run():
+        key = notify(*a, **kw)
+        if key and on_action:
+            on_action(key)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def open_path(p):
+    subprocess.Popen(["xdg-open", str(p)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def to_path(s):
+    if s.startswith("file://"):
+        s = urllib.parse.unquote(urllib.parse.urlparse(s).path)
+    return pathlib.Path(s).expanduser()
+
+
+def stream(fd):
+    """Yield (line, partial) from a raw fd, split on \\r and \\n.
+    Every 0.5 s without output yields (None, partial) so callers can check timers and prompts."""
+    buf = ""
+    while True:
+        r, _, _ = select.select([fd], [], [], 0.5)
+        if not r:
+            yield None, buf
+            continue
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            data = b""
+        if not data:
+            if buf.strip():
+                yield buf, ""
+            return
+        buf += data.decode("utf-8", "replace")
+        parts = re.split(r"[\r\n]+", buf)
+        buf = parts.pop()
+        for p in parts:
+            if p.strip():
+                yield p, buf
+
+
+# -------------------------------------------------------------------- radio
+def radio_is_up():
+    r = subprocess.run(["ip", "-6", "-o", "addr", "show", "dev", "awdl0"],
+                       capture_output=True, text=True)
+    return "fe80" in r.stdout
+
+
+def radio_up(timeout=45):
+    """Bring the AirDrop radio up (Wi-Fi pauses) and wait until awdl0 has its address."""
+    systemctl("stop", f"{RADIO_OFF}.timer")   # a pending keep-on shutdown is cancelled
+    if not unit_active(RADIO_UNIT):
+        systemctl("reset-failed", RADIO_UNIT)
+        subprocess.run(["systemd-run", "--user", "--collect", "--quiet", f"--unit={RADIO_UNIT}",
+                        "-p", "KillSignal=SIGINT", "-p", "TimeoutStopSec=20",
+                        "-p", "RuntimeMaxSec=1800",   # safety net: Wi-Fi always comes back
+                        OWLY, "radio", "up"], check=True)
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if radio_is_up():
+            time.sleep(0.5)
+            return True
+        if not unit_active(RADIO_UNIT):
+            break
+        time.sleep(0.2)
+    return False
+
+
+def radio_error():
+    r = subprocess.run(["journalctl", "--user", "-u", RADIO_UNIT, "-n", "4", "-o", "cat", "--no-pager"],
+                       capture_output=True, text=True)
+    lines = r.stdout.strip().splitlines()
+    return lines[-1] if lines else "the AirDrop radio did not come up"
+
+
+def radio_release(me, keep_on=0):
+    """Give Wi-Fi back, unless another job still needs the radio.
+    With keep_on > 0 the radio stays up that many seconds more, so a follow-up
+    send reuses it instead of costing another Wi-Fi reconnect."""
+    if any(unit_active(u) for k, u in JOB_UNITS.items() if k != me):
+        return
+    if keep_on > 0 and unit_active(RADIO_UNIT):
+        systemctl("stop", f"{RADIO_OFF}.timer")
+        (RUN / "released").write_text(str(time.time() + keep_on))
+        subprocess.run(["systemd-run", "--user", "--collect", "--quiet", f"--unit={RADIO_OFF}",
+                        f"--on-active={keep_on}", "systemctl", "--user", "stop", RADIO_UNIT],
+                       capture_output=True)
+        return
+    radio_down()
+
+
+def radio_down():
+    systemctl("stop", f"{RADIO_OFF}.timer")
+    if unit_active(RADIO_UNIT):
+        (RUN / "released").write_text(str(time.time()))
+    systemctl("stop", RADIO_UNIT)
+
+
+def wifi_state():
+    """'connected', 'connecting' or 'off' for the Wi-Fi station."""
+    r = subprocess.run(["nmcli", "-t", "-f", "TYPE,STATE", "device"], capture_output=True, text=True)
+    states = [l.split(":", 1)[1] for l in r.stdout.splitlines() if l.startswith("wifi:")]
+    if any(s.startswith("connected") for s in states):
+        return "connected"
+    if any(s.startswith("connecting") or s == "disconnected" for s in states):
+        return "connecting"
+    return "off"
+
+
+# ------------------------------------------------------------------- send
+def prepare_files(items):
+    out, tmpdir = [], RUN / "zips"
+    for s in items:
+        p = to_path(s)
+        if p.is_dir():
+            tmpdir.mkdir(exist_ok=True)
+            out.append(shutil.make_archive(str(tmpdir / p.name), "zip", root_dir=p.parent, base_dir=p.name))
+        elif p.is_file():
+            out.append(str(p))
+    return out
+
+
+def job_send(items, to):
+    conf = load_conf()
+    if not to:  # never "whoever answers first"
+        write_job("send", state="error", text="Choose a device first")
+        notify("No device chosen", "Search for devices in the KDrop widget and pick one.", "dialog-warning")
+        return 1
+    files = prepare_files(items)
+    if not files:
+        write_job("send", state="error", text="Nothing to send")
+        notify("Nothing to send", "Pick files or folders.", "dialog-warning")
+        return 1
+    label = os.path.basename(files[0]) + (f" +{len(files) - 1} more" if len(files) > 1 else "")
+    write_job("send", state="radio", text="Turning on AirDrop (Wi-Fi paused)…", files=label, peer=to)
+    ok = False
+    try:
+        if not radio_up():
+            err = radio_error()
+            write_job("send", state="error", text=err, files=label)
+            notify("AirDrop radio failed", err, "dialog-error")
+            return 1
+        write_job("send", state="looking", files=label, peer=to,
+                  text=f"Looking for {to}… (unlocked, AirDrop: Everyone)")
+        cmd = [OWLY, "send", "--seconds", "40", "--to", to, *name_args(conf), *files]
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        last, peer = "", ""
+        for line, _ in stream(p.stdout.fileno()):
+            if line is None:
+                continue
+            line = line.strip()
+            last = line
+            m = re.match(r'sending to "(.+?)" at', line)
+            if m:
+                peer = m.group(1)
+                if not same_name(peer, to):
+                    # somebody else answered: stop before anything is offered to them
+                    p.kill()
+                    p.wait()
+                    msg = f"“{peer}” answered instead of “{to}”. Nothing was sent."
+                    write_job("send", state="error", files=label, text=msg)
+                    notify("AirDrop send cancelled", msg, "dialog-warning")
+                    return 1
+                write_job("send", state="asking", files=label, peer=peer,
+                          text=f"Waiting for {peer} to accept…")
+            elif line == "accepted":
+                write_job("send", state="sending", files=label, peer=peer, progress=0,
+                          text=f"Sending to {peer}…")
+            elif line == "delivered":
+                ok = True
+            m = re.match(r"(\d+) / (\d+) bytes", line)
+            if m and int(m.group(2)):
+                pct = int(int(m.group(1)) * 100 / int(m.group(2)))
+                write_job("send", state="sending", files=label, peer=peer, progress=pct,
+                          text=f"Sending to {peer}… {pct}%")
+        rc = p.wait()
+        if ok or rc == 0:
+            ok = True
+            write_job("send", state="done", files=label, peer=peer or to, text=f"Sent to {peer or to}")
+            notify(f"Sent to {peer or to}", label, "emblem-success")
+            return 0
+        msg = last.removeprefix("owly: ") or f"owly exited with {rc}"
+        if "declin" in msg.lower():
+            msg = f"{peer or to} declined"
+        elif "looking for" in msg.lower() or "not found" in msg.lower() or not peer:
+            msg = f"{to} not found. Is it unlocked, nearby and set to AirDrop: Everyone?"
+        write_job("send", state="error", files=label, text=msg)
+        notify("AirDrop send failed", msg, "dialog-error")
+        return 1
+    finally:
+        radio_release("send", conf["keep_on_seconds"] if ok else 0)
+        shutil.rmtree(RUN / "zips", ignore_errors=True)
+
+
+# ---------------------------------------------------------------- receive
+def ask_accept(sender, files):
+    """Accept / Always accept / Decline dialog. Declines by itself after 60 s."""
+    body = f"{sender} wants to send:\n\n" + "\n".join(f"  • {f}" for f in files[:12])
+    if len(files) > 12:
+        body += f"\n  … and {len(files) - 12} more"
+    try:
+        rc = subprocess.run(["kdialog", "--title", f"{APP} – AirDrop", "--yesnocancel", body,
+                             "--yes-label", "Accept", "--no-label", "Always accept from this device",
+                             "--cancel-label", "Decline"], timeout=60).returncode
+    except subprocess.TimeoutExpired:
+        return "no"
+    return {0: "yes", 1: "always"}.get(rc, "no")
+
+
+def job_receive(minutes):
+    conf = load_conf()
+    minutes = minutes or conf["receive_minutes"]
+    dest = pathlib.Path(conf["dir"]).expanduser()
+    dest.mkdir(parents=True, exist_ok=True)
+    stop = {"flag": False}
+    signal.signal(signal.SIGTERM, lambda *_: stop.update(flag=True))
+    write_job("receive", state="radio", text="Turning on AirDrop (Wi-Fi paused)…")
+    proc, received = None, []
+    try:
+        if not radio_up():
+            err = radio_error()
+            write_job("receive", state="error", text=err)
+            notify("AirDrop radio failed", err, "dialog-error")
+            return 1
+        master, slave = pty.openpty()   # owly asks "accept? [y/N]" on a terminal
+        proc = subprocess.Popen([OWLY, "receive", "--dir", str(dest), *name_args(conf)],
+                                stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+        os.close(slave)
+        deadline = time.time() + minutes * 60
+        sender, offered, answered = "", [], True
+        for line, partial in stream(master):
+            if stop["flag"] or proc.poll() is not None or time.time() > deadline:
+                break
+            left = int(deadline - time.time())
+            write_job("receive", state="receiving", until=deadline, received=len(received),
+                      text=f"Visible as “{display_name(conf)}” · {left // 60}:{left % 60:02d} left")
+            if not answered and "accept? [y/N]" in (line or "") + partial:
+                answered = True
+                conf = load_conf()
+                if conf["auto_accept_trusted"] and in_list(sender, conf["trusted"]):
+                    answer = "yes"
+                else:
+                    answer = ask_accept(sender or "A device", offered)
+                if answer == "always":
+                    conf = load_conf()
+                    if not in_list(sender, conf["trusted"]):
+                        conf["trusted"].append(sender)
+                    if not in_list(sender, conf["devices"]):
+                        conf["devices"].append(sender)
+                    save_conf(conf)
+                os.write(master, b"y\n" if answer in ("yes", "always") else b"n\n")
+                deadline = time.time() + minutes * 60
+                continue
+            if line is None:
+                continue
+            line = line.strip()
+            m = re.match(r'"(.+?)" \(".*?"\) wants to send', line)
+            if m:
+                sender, offered, answered = m.group(1), [], False
+                deadline = time.time() + minutes * 60
+                continue
+            m = re.match(r'"(.+?)" \S+', line)
+            if m and not answered:
+                offered.append(m.group(1))
+                continue
+            if line.startswith("/") and os.path.exists(line):
+                received.append(line)
+                deadline = time.time() + minutes * 60
+                path = pathlib.Path(line)
+                notify_async(f"Received from {sender or 'AirDrop'}", path.name, "folder-download",
+                             actions={"open": "Open", "folder": "Show in folder"},
+                             on_action=lambda k, p=path: open_path(p if k == "open" else p.parent))
+            elif re.match(r"https?://", line):
+                received.append(line)
+                notify_async(f"Link from {sender or 'AirDrop'}", line, "internet-web-browser",
+                             actions={"open": "Open"}, on_action=lambda k, u=line: open_path(u))
+        n = len(received)
+        write_job("receive", state="done", received=n,
+                  text=f"Receiving ended · {n} item{'s' * (n != 1)} received")
+        return 0
+    finally:
+        if proc and proc.poll() is None:
+            proc.send_signal(signal.SIGINT)
+            try:
+                proc.wait(5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        radio_release("receive")
+
+
+# ----------------------------------------------------------------- browse
+def job_browse():
+    conf = load_conf()
+    write_job("browse", state="radio", text="Turning on AirDrop (Wi-Fi paused)…")
+    found = []
+    try:
+        if not radio_up():
+            err = radio_error()
+            write_job("browse", state="error", text=err)
+            return 1
+        write_job("browse", state="looking", found=[], text="Looking for devices… (AirDrop: Everyone)")
+        limit = conf["browse_seconds"]
+        p = subprocess.Popen([OWLY, "browse", "--seconds", str(limit), *name_args(conf)],
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        end = time.time() + limit + 2
+        for line, _ in stream(p.stdout.fileno()):
+            if line:
+                m = re.match(r'^\S+\s+"(.+?)" \(', line.strip())
+                if m and not in_list(m.group(1), found):
+                    found.append(m.group(1))
+                    # stop soon after the first answer: devices nearby answer together,
+                    # and every second here is a second without Wi-Fi
+                    end = min(end, time.time() + 2.5)
+                    write_job("browse", state="looking", found=found,
+                              text="Found: " + ", ".join(found) + " …")
+            if time.time() > end:
+                break
+        if p.poll() is None:
+            p.send_signal(signal.SIGINT)
+            try:
+                p.wait(3)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        conf = load_conf()
+        conf["devices"] += [n for n in found if not in_list(n, conf["devices"])]
+        save_conf(conf)
+        write_job("browse", state="done", found=found,
+                  text=("Found: " + ", ".join(found)) if found else
+                  "No devices found. Unlock the device and set AirDrop to Everyone.")
+        return 0
+    finally:
+        radio_release("browse", conf["keep_on_seconds"] if found else 0)
+
+
+# --------------------------------------------------------------- frontend
+def launch(kind, args):
+    """Run a job in its own systemd user unit, so it outlives the widget or Dolphin."""
+    unit = JOB_UNITS[kind]
+    if unit_active(unit):
+        notify("KDrop is busy", f"A {kind} is already running.", "dialog-information")
+        return 1
+    systemctl("reset-failed", unit)
+    env = []
+    for k in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS",
+              "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"):
+        if os.environ.get(k):
+            env += ["-E", f"{k}={os.environ[k]}"]
+    write_job(kind, state="radio", text="Starting…")
+    return subprocess.run(["systemd-run", "--user", "--collect", "--quiet", f"--unit={unit}",
+                           "-p", "KillSignal=SIGTERM", "-p", "TimeoutStopSec=25", *env,
+                           sys.executable, SELF, "_run", kind, *args]).returncode
+
+
+def status():
+    conf = load_conf()
+    jobs = {}
+    for kind, unit in JOB_UNITS.items():
+        j = read_job(kind)
+        if not j:
+            continue
+        j["active"] = unit_active(unit)
+        if not j["active"] and j.get("state") in ("radio", "looking", "asking", "sending", "receiving"):
+            j["state"], j["text"] = "error", "Stopped"
+        if j["active"] or time.time() - j["time"] < 20:
+            jobs[kind] = j
+    radio = unit_active(RADIO_UNIT)
+    wifi = "airdrop" if radio else wifi_state()
+    try:
+        released = float((RUN / "released").read_text())
+    except (OSError, ValueError):
+        released = 0
+    if wifi == "off" and not radio and 0 <= time.time() - released < 90:
+        wifi = "connecting"   # NetworkManager is taking the card back after AirDrop
+    elif wifi != "connected" and not radio and time.time() - released > 90:
+        wifi = "off"   # not something KDrop caused
+    out = {"version": VERSION, "radio": radio, "wifi": wifi,
+           "keep_on": unit_active(f"{RADIO_OFF}.timer"), "jobs": jobs,
+           "host": display_name(conf), "hostname": os.uname().nodename,
+           "owly": os.path.exists(OWLY)}
+    out.update({k: conf[k] for k in SETTINGS})
+    out.update({k: conf[k] for k in LISTS})
+    print(json.dumps(out, ensure_ascii=False))
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "_run":   # inside the systemd unit
+        kind, rest = rest[0], rest[1:]
+        if kind == "send":
+            return job_send(rest[2:], rest[1]) if rest[:1] == ["--to"] else job_send(rest, None)
+        if kind == "receive":
+            return job_receive(int(rest[0]) if rest else 0)
+        return job_browse()
+    if cmd == "--version":
+        print(VERSION)
+        return 0
+    if cmd == "send":
+        if rest[:1] != ["--to"] or len(rest) < 3:
+            notify("No device chosen", "Search for devices in the KDrop widget and pick one.",
+                   "dialog-warning")
+            print("usage: kdrop send --to NAME FILE...", file=sys.stderr)
+            return 2
+        return launch("send", rest)
+    if cmd == "receive":
+        if rest[:1] == ["--minutes"]:
+            rest = rest[1:]
+        return launch("receive", [str(int(rest[0]))] if rest else [])
+    if cmd == "browse":
+        return launch("browse", [])
+    if cmd == "stop":
+        systemctl("stop", *JOB_UNITS.values())
+        radio_down()
+        return 0
+    if cmd == "status":
+        status()
+        return 0
+    conf = load_conf()
+    if cmd == "settings":
+        print(json.dumps(conf, indent=2, ensure_ascii=False))
+        return 0
+    if cmd == "set" and len(rest) == 2 and rest[0] in SETTINGS:
+        try:
+            conf[rest[0]] = SETTINGS[rest[0]][1](rest[1])
+        except ValueError:
+            print(f"bad value for {rest[0]}", file=sys.stderr)
+            return 2
+    elif cmd == "trust" and rest:
+        for lst in ("trusted", "devices"):
+            if not in_list(rest[0], conf[lst]):
+                conf[lst].append(rest[0])
+    elif cmd == "untrust" and rest:
+        conf["trusted"] = [d for d in conf["trusted"] if not same_name(d, rest[0])]
+    elif cmd == "forget" and rest:
+        for lst in LISTS:
+            conf[lst] = [d for d in conf[lst] if not same_name(d, rest[0])]
+    elif cmd == "refresh-menu":
+        pass
+    else:
+        print(__doc__, file=sys.stderr)
+        return 2
+    save_conf(conf)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
