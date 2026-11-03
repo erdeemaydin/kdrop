@@ -1,6 +1,6 @@
 # KDrop
 
-**AirDrop for KDE Plasma.** A panel widget for sending files to and receiving files from iPhone, iPad and Mac, using real AirDrop, with no app on the Apple device.
+**AirDrop for KDE Plasma** (and other Linux desktops). A panel widget for sending files to and receiving files from iPhone, iPad and Mac, using real AirDrop, with no app on the Apple device.
 
 <p>
   <img src="docs/main.png" width="420" alt="KDrop popup: two files selected, waiting for a device to be chosen">
@@ -15,28 +15,33 @@ KDrop is a front end for [**owly**](https://github.com/t4t5/owly), which impleme
 - **Explicit receivers only:** KDrop never sends to "whoever answers first". You pick the device every time, and if a different device answers than the one you picked, the send is cancelled before anything is offered.
 - **Receive:** one click makes your PC visible for a few minutes. Each incoming transfer asks **Accept / Always accept from this device / Decline**. Received files get *Open* and *Show in folder* actions.
 - **Trusted devices:** your own devices can skip the prompt. Manage the list in Settings.
-- **Dolphin integration:** right-click any file → *Send via AirDrop* → your device.
-- **Short Wi-Fi interruptions:** on most cards AirDrop and Wi-Fi can't run at once, so KDrop turns the AirDrop radio on only for the transfer and gives the card back to NetworkManager immediately. See [Wi-Fi interruptions](#wi-fi-interruptions).
+- **File manager integration:** right-click any file → *Send via AirDrop* → your device. Works in Dolphin (KDE), Files (GNOME), Nemo (Cinnamon) and Caja (MATE).
+- **Not only Plasma:** on GNOME and other desktops, KDrop adds *Find devices* and *Receive files* to the app menu and reports progress as notifications. See [Other desktops](#other-desktops).
+- **Short Wi-Fi interruptions:** on most cards AirDrop and Wi-Fi can't run at once, so KDrop turns the AirDrop radio on only for the transfer and gives the card back to NetworkManager immediately. See [Wi-Fi cards and interruptions](#wi-fi-cards-and-interruptions).
 - **Works anywhere:** AirDrop is a direct device-to-device link. It doesn't go through your network, so it works on eduroam, hotel and café Wi-Fi, or with no network at all.
 
 ## Requirements
 
-- KDE Plasma 6
+- Linux with systemd. KDE Plasma 6 for the panel widget; other desktops work too (see [Other desktops](#other-desktops))
 - [owly](https://github.com/t4t5/owly) installed (`owly doctor` should say `ready`)
-- A Wi-Fi card owly supports. Most recent Intel cards (AX200/AX201/AX210/AX211/BE200) and several MediaTek and Realtek cards work; see [owly's hardware table](https://github.com/t4t5/owly#supported-hardware)
-- Python 3, `kdialog`, `notify-send` (standard on Plasma desktops)
+- A Wi-Fi card owly supports: most recent Intel cards and many Realtek and MediaTek cards. Some keep Wi-Fi connected, others drop it briefly; see [Wi-Fi cards and interruptions](#wi-fi-cards-and-interruptions)
+- Python 3 and `notify-send`, plus `kdialog` (KDE) or `zenity` (GNOME and most others) for the accept prompt. All are usually preinstalled
 - On the Apple device: AirDrop set to **Everyone for 10 minutes** when it should see your PC, or when you send to it
 
 ## Install
 
-1. Install owly (Fedora example, see owly's README for other distros):
+1. Install owly. Packages exist for Fedora (44+), Debian 12 / Ubuntu 22.04 and newer, Arch (AUR) and NixOS:
 
    ```sh
-   sudo dnf install ./owly-*.x86_64.rpm      # from https://github.com/t4t5/owly/releases
-   owly doctor                                # should end with "ready"
+   sudo dnf install ./owly-*.x86_64.rpm      # Fedora, from https://github.com/t4t5/owly/releases
+   sudo apt install ./owly_*_amd64.deb       # Debian/Ubuntu, same page
+   yay -S owly                               # Arch
+   owly doctor                               # should end with "ready"
    ```
 
-   If you use firewalld, let AirDrop in on the AirDrop interface only:
+   NixOS and building from source: see [owly's README](https://github.com/t4t5/owly#install).
+
+   If you use firewalld, step 2 offers to set this up for you. To do it by hand, let AirDrop in on the AirDrop interface only:
 
    ```sh
    sudo firewall-cmd --permanent --new-zone=awdl
@@ -54,7 +59,7 @@ KDrop is a front end for [**owly**](https://github.com/t4t5/owly), which impleme
    ./install.sh
    ```
 
-3. Right-click the panel → **Add Widgets…** → **KDrop**.
+3. On Plasma: right-click the panel → **Add Widgets…** → search **KDrop** → drag it to the panel. Other desktops: nothing more to do, see [Other desktops](#other-desktops).
 
 To update, `git pull && ./install.sh`, then `systemctl --user restart plasma-plasmashell`.
 To remove, run `./uninstall.sh`.
@@ -66,32 +71,63 @@ To remove, run `./uninstall.sh`.
 | **Find your devices** | Set AirDrop on the iPhone/iPad to *Everyone for 10 minutes*, then press **Search**. Found devices are saved. |
 | **Send** | Drop files on the icon or popup → click the device. |
 | **Receive** | Press **Receive for N min**, then on the Apple device choose your PC in the AirDrop share sheet. |
-| **From Dolphin** | Right-click files → *Send via AirDrop* → device. |
+| **From the file manager** | Right-click files → *Send via AirDrop* → device (Dolphin, Files, Nemo, Caja). |
 | **Stop / restart** | Right-click the widget → *Stop AirDrop & Reconnect Wi-Fi* or *Restart KDrop* |
 | **Command line** | `kdrop send --to "My iPad" photo.jpg`, `kdrop receive`, `kdrop browse`, `kdrop stop`, `kdrop restart`, `kdrop --help` |
 
-## Wi-Fi interruptions
+## Wi-Fi cards and interruptions
 
-On cards that run owly in *exclusive* mode (every Intel card, for example), Wi-Fi is off while AirDrop is on. KDrop keeps that window short:
+AirDrop needs the Wi-Fi card itself, so whether your normal Wi-Fi keeps working during a transfer depends on the card. owly runs each card in one of two ways:
+
+| owly mode | What happens to your Wi-Fi | Cards (tested by owly) |
+|---|---|---|
+| **Shared** | **Stays connected the whole time.** AirDrop runs next to your normal connection. Your access point has to be on channel **6, 44 or 149**. | MediaTek MT7925 · Realtek RTL8851BE, RTL8852AE, RTL8852BE, RTL8852CE · Qualcomm Atheros AR9287 |
+| **Exclusive** | **Drops briefly.** Wi-Fi is off while AirDrop is on and reconnects afterwards. | Every Intel card that works (9260, 9560, AX200, AX201, AX210, AX211, BE200, BE Panther Lake) · Realtek RTL8822BE, RTL8922AE · MediaTek MT7612U (USB) |
+| **Not working (yet)** | AirDrop doesn't work. | Qualcomm WCN6855 and WCN7850 · Intel AC 7265, 8260, 8265 · Realtek RTL8821CE, RTL8821AU |
+
+The list changes with each owly release. [owly's hardware table](https://github.com/t4t5/owly#supported-hardware) is the current one. To see what *your* card does, run:
+
+```sh
+owly doctor      # prints the mode and anything in the way, e.g. the access point's channel
+```
+
+### On exclusive cards
+
+KDrop keeps the gap as short as it can:
 
 - The radio starts when you click a device, Search or Receive, not before, and stops as soon as the job is done.
 - A search ends as soon as devices have answered, instead of running its full time.
 - **Keep AirDrop on** (Settings) leaves the radio up for N seconds after a send, so several sends in a row share one reconnect. It's off by default.
 - The widget shows *Reconnecting Wi-Fi…* until NetworkManager is back.
 
-What's left is NetworkManager reconnecting, which KDrop can't speed up. Measured on eduroam with an AX210: roughly 5 s scanning, 1 s for 802.1X login and 4 s for DHCP. On a home network it's usually a few seconds.
+What's left is NetworkManager reconnecting, which KDrop can't speed up. Measured on eduroam with an AX210: roughly 5 s scanning, 1 s for 802.1X login and 4 s for DHCP, so about 10 s per transfer. On a home network it's usually a few seconds. Downloads, calls and SSH sessions running at that moment will be interrupted.
 
-If your access point is on channel 6, 44 or 149 and your card supports owly's *shared* mode, Wi-Fi stays connected the whole time. A second USB Wi-Fi adapter dedicated to AirDrop also avoids interruptions; see owly's README.
+To avoid the gap completely on an exclusive card, plug in a supported **USB Wi-Fi adapter** and let owly use it for AirDrop while the built-in card stays connected (see owly's README, *Modes*).
+
+## Other desktops
+
+The Plasma widget is the easiest way to use KDrop, but everything also works without it. On GNOME, Cinnamon, MATE, Xfce and others, `install.sh` adds:
+
+| | |
+|---|---|
+| **KDrop: Find devices** (app menu) | Looks for nearby devices and saves them. A notification shows what was found. |
+| **Send** | Right-click files → *Send via AirDrop* → device. In GNOME Files it's under *Scripts*. |
+| **KDrop: Receive files** (app menu) | Makes your PC visible for a few minutes. Each transfer asks Accept / Always accept / Decline in a dialog. |
+
+Everything else (progress, results, errors) arrives as notifications. Settings can be changed with `kdrop set` (`kdrop --help` lists them), for example `kdrop set receive_minutes 5`.
+
+Xfce's Thunar has no menu file KDrop can generate. Add a custom action there by hand (*Edit → Configure custom actions*) with the command `kdrop send --to "Device name" %F`.
 
 ## How it works
 
 ```
-Plasma widget (QML) ─┐
-Dolphin service menu ├─▶ kdrop (Python helper) ─▶ owly CLI ─▶ owlyd (system service, AWDL radio)
-Command line ────────┘        │
-                              └─ runs each job as a systemd user unit, so transfers survive
-                                 Plasma restarts; the radio unit has a 30-minute hard limit
-                                 so Wi-Fi always comes back
+Plasma widget (QML) ───┐
+File manager menus ────┤
+App menu (non-Plasma) ─├─▶ kdrop (Python helper) ─▶ owly CLI ─▶ owlyd (system service, AWDL radio)
+Command line ──────────┘        │
+                                └─ runs each job as a systemd user unit, so transfers survive
+                                   Plasma restarts; the radio unit has a 30-minute hard limit
+                                   so Wi-Fi always comes back
 ```
 
 Settings live in `~/.config/kdrop.json`.
