@@ -5,11 +5,11 @@
         "Id": "io.github.erdeemaydin.kdrop",
         "Name": "KDrop",
         "Description": "Send and receive files with iPhone, iPad and Mac over AirDrop",
-        "Icon": "document-send",
+        "Icon": "io.github.erdeemaydin.kdrop",
         "Category": "Utilities",
         "Authors": [{ "Name": "Erdem Aydın" }],
         "License": "MIT",
-        "Version": "1.1.0",
+        "Version": "1.2.0",
         "Website": "https://github.com/erdeemaydin/kdrop",
         "BugReportUrl": "https://github.com/erdeemaydin/kdrop/issues"
     }

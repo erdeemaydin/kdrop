@@ -1,3 +1,5 @@
+<img src="plasmoid/contents/icons/kdrop.svg" width="72" align="right" alt="KDrop logo">
+
 # KDrop
 
 **AirDrop for KDE Plasma** (and other Linux desktops). A panel widget for sending files to and receiving files from iPhone, iPad and Mac, using real AirDrop, with no app on the Apple device.
@@ -16,6 +18,7 @@ KDrop is a front end for [**owly**](https://github.com/t4t5/owly), which impleme
 - **Receive:** one click makes your PC visible, for 30 seconds up to 30 minutes (pick it next to the button). Each incoming transfer asks **Accept / Always accept from this device / Decline**. Received files get *Open* and *Show in folder* actions.
 - **Trusted devices:** your own devices can skip the prompt. Manage the list in Settings.
 - **File manager integration:** right-click any file → *Send via AirDrop* → your device. Works in Dolphin (KDE), Files (GNOME), Nemo (Cinnamon) and Caja (MATE).
+- **Widget or app:** on Plasma, KDrop runs as a panel widget or as a normal app window (app menu, tray icon while open). Switch in Settings.
 - **Not only Plasma:** on GNOME and other desktops, KDrop adds *Find devices* and *Receive files* to the app menu and reports progress as notifications. See [Other desktops](#other-desktops).
 - **Short Wi-Fi interruptions:** on most cards AirDrop and Wi-Fi can't run at once, so KDrop turns the AirDrop radio on only for the transfer and gives the card back to NetworkManager immediately. See [Wi-Fi cards and interruptions](#wi-fi-cards-and-interruptions).
 - **Works anywhere:** AirDrop is a direct device-to-device link. It doesn't go through your network, so it works on eduroam, hotel and café Wi-Fi, or with no network at all.
@@ -59,7 +62,7 @@ KDrop is a front end for [**owly**](https://github.com/t4t5/owly), which impleme
    ./install.sh
    ```
 
-3. On Plasma: right-click the panel → **Add Widgets…** → search **KDrop** → drag it to the panel. Other desktops: nothing more to do, see [Other desktops](#other-desktops).
+3. That's it. On Plasma, `install.sh` puts KDrop in your panel; click its icon to start. On other desktops, see [Other desktops](#other-desktops).
 
 To update, `git pull && ./install.sh`, then `systemctl --user restart plasma-plasmashell`.
 To remove, run `./uninstall.sh`.
@@ -72,6 +75,7 @@ To remove, run `./uninstall.sh`.
 | **Send** | Drop files on the icon or popup → click the device. |
 | **Receive** | Pick how long (30 s – 30 min) next to **Receive** and press it, then on the Apple device choose your PC in the AirDrop share sheet. The time restarts after each transfer. |
 | **From the file manager** | Right-click files → *Send via AirDrop* → device (Dolphin, Files, Nemo, Caja). |
+| **Settings** | The ⚙ button opens the settings window. Changes apply when you press **Save**. Under *Run KDrop as* you choose between panel widget and separate app. |
 | **Stop / restart** | Right-click the widget → *Stop AirDrop & Reconnect Wi-Fi* or *Restart KDrop* |
 | **Command line** | `kdrop send --to "My iPad" photo.jpg`, `kdrop receive 30s`, `kdrop browse`, `kdrop stop`, `kdrop restart`, `kdrop --help` |
 

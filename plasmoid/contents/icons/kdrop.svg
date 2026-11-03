@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- KDrop logo: a folded paper plane with its flight trail. SPDX-License-Identifier: MIT -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22b8f0"/>
+      <stop offset="1" stop-color="#5b4be0"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)"/>
+  <path d="M22 108 C34 102 40 94 47 86" fill="none" stroke="#fff" stroke-opacity="0.75"
+        stroke-width="5" stroke-linecap="round" stroke-dasharray="1 10"/>
+  <path d="M104 24 L20 58 L50 70 Z" fill="#fff"/>
+  <path d="M104 24 L50 70 L66 104 Z" fill="#e3e8ff"/>
+  <path d="M104 24 L50 70 L56 92 Z" fill="#b9c3f5"/>
+</svg>

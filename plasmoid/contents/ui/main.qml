@@ -2,12 +2,14 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtQuick.Window
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.components as PC3
 import org.kde.plasma.extras as PlasmaExtras
 import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
+import QtQuick.Controls as QQC2
 
 PlasmoidItem {
     id: root
@@ -17,7 +19,9 @@ PlasmoidItem {
                         receive_seconds: 180, dir: "", host: "", owly: true })
     // files waiting for you to click a device; nothing is sent before that click
     property var pending: []
-    property bool showSettings: false
+    readonly property url logo: Qt.resolvedUrl("../icons/kdrop.svg")
+    // running as an app window (plasmawindowed): the title bar already shows logo and name
+    readonly property bool windowed: Plasmoid.formFactor === PlasmaCore.Types.Application
 
     readonly property var sendJob: st.jobs.send || null
     readonly property var recvJob: st.jobs.receive || null
@@ -27,10 +31,10 @@ PlasmoidItem {
     readonly property bool browsing: !!(browseJob && browseJob.active)
     readonly property bool busy: sending || receiving || browsing || st.radio
 
-    Plasmoid.icon: busy ? "network-wireless-hotspot" : "document-send"
+    Plasmoid.icon: "io.github.erdeemaydin.kdrop"
     Plasmoid.status: busy || pending.length ? PlasmaCore.Types.ActiveStatus : PlasmaCore.Types.PassiveStatus
     // the file and folder dialogs take focus; don't let that close the popup
-    hideOnWindowDeactivate: !fileDialog.visible && !folderDialog.visible
+    hideOnWindowDeactivate: !fileDialog.visible && !folderDialog.visible && !settingsWindow.visible
     toolTipMainText: "KDrop"
     toolTipSubText: {
         const j = sendJob || recvJob || browseJob
@@ -44,7 +48,7 @@ PlasmoidItem {
         PlasmaCore.Action {
             text: "KDrop Settings…"
             icon.name: "configure"
-            onTriggered: { root.showSettings = true; root.expanded = true }
+            onTriggered: root.openSettings()
         },
         PlasmaCore.Action {
             text: "Stop AirDrop && Reconnect Wi-Fi"
@@ -55,7 +59,7 @@ PlasmoidItem {
         PlasmaCore.Action {
             text: "Restart KDrop"
             icon.name: "view-refresh"
-            onTriggered: { root.pending = []; root.showSettings = false; root.run(["restart"]) }
+            onTriggered: { root.pending = []; root.run(["restart"]) }
         }
     ]
 
@@ -77,7 +81,6 @@ PlasmoidItem {
         for (let i = 0; i < urls.length; ++i) list.push(urls[i].toString())
         if (!list.length) return
         pending = list
-        showSettings = false
         expanded = true
     }
     function sendTo(device) {
@@ -91,6 +94,11 @@ PlasmoidItem {
     }
     function urlToPath(u) { return decodeURIComponent(String(u).replace(/^file:\/\//, "")) }
     function chooseFolder() { folderDialog.open() }
+    function openSettings() {
+        settingsWindow.show()
+        settingsWindow.raise()
+        settingsWindow.requestActivate()
+    }
 
     P5Support.DataSource {
         id: exec
@@ -123,8 +131,69 @@ PlasmoidItem {
         id: folderDialog
         title: "Save received files to"
         currentFolder: "file://" + root.st.dir
-        onAccepted: { root.run(["set", "dir", root.urlToPath(selectedFolder)]); root.expanded = true }
-        onRejected: root.expanded = true
+        onAccepted: if (settingsLoader.item) settingsLoader.item.change("dir", root.urlToPath(selectedFolder))
+    }
+
+    // ------------------------------------------------------------ settings window
+    Window {
+        id: settingsWindow
+        title: "KDrop Settings"
+        width: Kirigami.Units.gridUnit * 28
+        height: Math.min(Kirigami.Units.gridUnit * 44, Screen.desktopAvailableHeight * 0.85)
+        minimumWidth: Kirigami.Units.gridUnit * 22
+        minimumHeight: Kirigami.Units.gridUnit * 16
+        flags: Qt.Dialog
+        color: Kirigami.Theme.backgroundColor
+        Kirigami.Theme.colorSet: Kirigami.Theme.Window
+        Kirigami.Theme.inherit: false
+        readonly property var page: settingsLoader.item
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+
+            QQC2.ScrollView {
+                id: settingsScroll
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentWidth: availableWidth
+                contentHeight: settingsLoader.height + Kirigami.Units.gridUnit
+                QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
+                // rebuilt on every open: starts from the saved settings, unsaved edits vanish on close
+                Loader {
+                    id: settingsLoader
+                    active: settingsWindow.visible
+                    x: Kirigami.Units.gridUnit
+                    y: Kirigami.Units.gridUnit
+                    width: settingsScroll.availableWidth - Kirigami.Units.gridUnit * 2
+                    height: item ? item.implicitHeight + Kirigami.Units.gridUnit : 0
+                    sourceComponent: SettingsPage { app: root }
+                }
+            }
+            Kirigami.Separator { Layout.fillWidth: true }
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.margins: Kirigami.Units.largeSpacing
+                QQC2.Label {
+                    Layout.fillWidth: true
+                    opacity: 0.7
+                    text: settingsWindow.page && settingsWindow.page.dirty ? "Unsaved changes" : ""
+                }
+                QQC2.Button {
+                    readonly property bool dirty: !!settingsWindow.page && settingsWindow.page.dirty
+                    text: dirty ? "Cancel" : "Close"
+                    icon.name: dirty ? "dialog-cancel" : "window-close"
+                    onClicked: settingsWindow.close()
+                }
+                QQC2.Button {
+                    text: "Save"
+                    icon.name: "document-save"
+                    highlighted: true
+                    enabled: !!settingsWindow.page && settingsWindow.page.dirty
+                    onClicked: { settingsWindow.page.save(); settingsWindow.close() }
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------ panel icon
@@ -134,7 +203,7 @@ PlasmoidItem {
         onClicked: root.expanded = !root.expanded
         Kirigami.Icon {
             anchors.fill: parent
-            source: Plasmoid.icon
+            source: root.logo
             active: compact.containsMouse || compactDrop.containsDrag
         }
         PC3.BusyIndicator {
@@ -152,58 +221,46 @@ PlasmoidItem {
 
     // ------------------------------------------------------------ popup
     fullRepresentation: PlasmaExtras.Representation {
+        // Always tall enough for everything on the page: status lines appear during a search or
+        // send, and the popup grows with them. It's the minimum too, because Plasma reopens a
+        // popup at the size it last had, which would cut the bottom off once the page grew.
+        readonly property real fitHeight: heading.implicitHeight + mainPage.implicitHeight
+                                          + Kirigami.Units.largeSpacing * 2
         Layout.preferredWidth: Kirigami.Units.gridUnit * 22
-        Layout.preferredHeight: (root.showSettings
-                                 ? Math.min(settings.implicitHeight, Kirigami.Units.gridUnit * 26)
-                                 : mainPage.implicitHeight) + Kirigami.Units.largeSpacing * 2
         Layout.minimumWidth: Kirigami.Units.gridUnit * 18
+        Layout.preferredHeight: fitHeight
+        Layout.minimumHeight: fitHeight
 
         header: PlasmaExtras.PlasmoidHeading {
+            id: heading
             RowLayout {
                 anchors.fill: parent
-                PC3.ToolButton {
-                    visible: root.showSettings
-                    icon.name: "go-previous"
-                    onClicked: root.showSettings = false
-                    PC3.ToolTip.text: "Back"; PC3.ToolTip.visible: hovered
+                Kirigami.Icon {
+                    visible: !root.windowed
+                    source: root.logo
+                    implicitWidth: Kirigami.Units.iconSizes.smallMedium; implicitHeight: implicitWidth
                 }
                 Kirigami.Heading {
                     level: 2
                     Layout.fillWidth: true
-                    text: root.showSettings ? "Settings" : "KDrop"
+                    text: root.windowed ? "" : "KDrop"
                 }
                 PC3.ToolButton {
-                    visible: !root.showSettings
                     icon.name: "folder-download"
                     text: "Received"
                     onClicked: Qt.openUrlExternally("file://" + root.st.dir)
                     PC3.ToolTip.text: root.st.dir; PC3.ToolTip.visible: hovered
                 }
                 PC3.ToolButton {
-                    visible: !root.showSettings
                     icon.name: "configure"
-                    onClicked: root.showSettings = true
+                    onClicked: root.openSettings()
                     PC3.ToolTip.text: "Settings"; PC3.ToolTip.visible: hovered
                 }
             }
         }
 
-        PC3.ScrollView {
-            id: settingsScroll
-            visible: root.showSettings
-            anchors.fill: parent
-            contentWidth: availableWidth
-            PC3.ScrollBar.horizontal.policy: PC3.ScrollBar.AlwaysOff
-            SettingsPage {
-                id: settings
-                app: root
-                width: settingsScroll.availableWidth
-            }
-        }
-
         ColumnLayout {
             id: mainPage
-            visible: !root.showSettings
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
@@ -377,6 +434,8 @@ PlasmoidItem {
                 }
                 DurationBox {
                     app: root
+                    seconds: root.st.receive_seconds || 180
+                    onPicked: s => root.run(["set", "receive_seconds", String(s)])
                     visible: !root.receiving
                     PC3.ToolTip.text: "How long to stay visible after the last transfer"
                     PC3.ToolTip.visible: hovered

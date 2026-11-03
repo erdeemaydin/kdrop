@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
-// How long to stay visible for receiving. Saves the choice as the new default.
+// How long to stay visible for receiving.
 import QtQuick
-import org.kde.plasma.components as PC3
+import QtQuick.Controls as QQC2
 
-PC3.ComboBox {
+QQC2.ComboBox {
     id: box
     required property var app
-    readonly property int seconds: app.st.receive_seconds || 180
+    property int seconds: 180
+    signal picked(int seconds)
+
     readonly property var presets: [30, 60, 120, 180, 300, 600, 1800]
     // keep a value set elsewhere (e.g. `kdrop set receive_seconds 45s`) selectable
     readonly property var choices: presets.indexOf(seconds) >= 0 ? presets
@@ -14,5 +16,5 @@ PC3.ComboBox {
 
     model: choices.map(s => app.fmtDuration(s))
     currentIndex: choices.indexOf(seconds)
-    onActivated: index => app.run(["set", "receive_seconds", String(choices[index])])
+    onActivated: index => picked(choices[index])
 }

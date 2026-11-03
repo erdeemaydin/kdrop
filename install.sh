@@ -13,6 +13,9 @@ if ! command -v owly >/dev/null; then
 fi
 
 install -Dm755 kdrop "$BIN"
+ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
+install -Dm644 plasmoid/contents/icons/kdrop.svg "$ICON_DIR/$ID.svg"
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
 # Clean up the pre-rename "Owly Drop" prototype, keeping its settings (kdrop reads them).
 if [ -e "$HOME/.local/bin/owlydrop" ] || [ -d "$HOME/.local/share/plasma/plasmoids/local.owlydrop" ]; then
@@ -40,7 +43,7 @@ Type=Application
 Name=KDrop: Receive files
 Comment=Be visible to nearby iPhones, iPads and Macs for a few minutes
 Exec="$BIN" receive --notify
-Icon=folder-download
+Icon=$ID
 Terminal=false
 Categories=Network;FileTransfer;
 Actions=s30;m1;m5;m10;
@@ -67,7 +70,7 @@ Type=Application
 Name=KDrop: Find devices
 Comment=Look for nearby iPhones, iPads and Macs to send files to
 Exec="$BIN" browse --notify
-Icon=edit-find
+Icon=$ID
 Terminal=false
 Categories=Network;FileTransfer;
 DESKTOP
@@ -94,12 +97,16 @@ fi
 echo
 echo "KDrop installed."
 if [ "$PLASMA" = 1 ]; then
-    if grep -q "$ID" "$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null; then
-        echo "It's already in your panel. After an update, reload Plasma:"
-        echo "  systemctl --user restart plasma-plasmashell"
-    else
-        echo "Add it: right-click the panel → Add Widgets… → search \"KDrop\" → drag it to the panel."
+    # Puts KDrop where the saved setting says: in the panel (default) or in the app menu.
+    if "$BIN" apply-mode; then
+        if [ "$("$BIN" settings | grep -o '"mode": "[a-z]*"')" = '"mode": "app"' ]; then
+            echo "Open KDrop from your app menu."
+        else
+            echo "KDrop is in your panel. Click its icon to start."
+        fi
     fi
+    echo "(Settings → \"Run KDrop as\" switches between panel widget and separate app.)"
+    echo "After an update, reload Plasma: systemctl --user restart plasma-plasmashell"
 else
     echo "1. Set AirDrop on your iPhone/iPad to \"Everyone for 10 minutes\"."
     echo "2. Open \"KDrop: Find devices\" from your app menu."

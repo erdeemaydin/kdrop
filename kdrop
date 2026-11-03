@@ -14,9 +14,11 @@ Usage:
   kdrop browse                       look for nearby devices and remember them
   kdrop stop                         stop everything and give Wi-Fi back now
   kdrop restart                      stop everything and reset KDrop's state
+  kdrop mode widget|app              Plasma: run as a panel widget, or as an app window
+                                     (app menu, tray icon while open)
   kdrop status                       state as JSON (used by the widget)
   --notify (with receive/browse)     report progress as notifications (no widget, e.g. GNOME)
-  kdrop set KEY VALUE                change a setting (see `kdrop settings`)
+  kdrop set KEY VALUE [KEY VALUE…]   change settings (see `kdrop settings`)
   kdrop settings                     show settings
   kdrop trust NAME | untrust NAME    accept from NAME without asking (or stop doing so)
   kdrop forget NAME                  remove a saved device
@@ -36,7 +38,7 @@ import threading
 import time
 import urllib.parse
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 APP = "KDrop"
 HOME = pathlib.Path.home()
 RUN = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "kdrop"
@@ -49,6 +51,12 @@ CAJA_DIR = CONFIG_HOME / "caja/scripts/Send via AirDrop"                 # Caja 
 NEMO_ACTIONS = DATA_HOME / "nemo/actions"                                # Nemo (Cinnamon)
 OWLY = shutil.which("owly") or "/usr/bin/owly"
 SELF = str(pathlib.Path(__file__).resolve())
+PLASMOID = "io.github.erdeemaydin.kdrop"
+APP_ENTRY = DATA_HOME / f"applications/{PLASMOID}.desktop"
+# The app window belongs to plasmawindowed, so the taskbar looks up *its* launcher for the icon.
+# In app mode a user copy of that launcher carries KDrop's name and icon. (Any other widget run
+# with plasmawindowed would show KDrop's icon too; that's rare, and it goes in widget mode.)
+WINDOWED_ENTRY = DATA_HOME / "applications/org.kde.plasmawindowed.desktop"
 
 RADIO_UNIT = "kdrop-radio.service"
 RADIO_OFF = "kdrop-radio-off"          # timer that gives Wi-Fi back after the keep-on delay
@@ -60,6 +68,7 @@ JOB_UNITS = {"send": "kdrop-send.service",
 SETTINGS = {
     "dir": (str(HOME / "Downloads" / "AirDrop"), str),
     "receive_seconds": (180, lambda v: max(15, min(1800, int(v)))),
+    "mode": ("widget", lambda v: one_of(v, "widget", "app")),              # Plasma only
     "theme": ("system", lambda v: one_of(v, "system", "dark", "light")),   # non-KDE dialogs
     "name": ("", lambda v: str(v).strip()[:60]),          # name others see; empty = host name
     "auto_accept_trusted": (True, lambda v: str(v).lower() in ("1", "true", "yes", "on")),
@@ -210,6 +219,76 @@ def write_menus(c):
         write_script_menu(CAJA_DIR, c["devices"])
     if shutil.which("nemo"):
         write_nemo_actions(c["devices"])
+
+
+# ---------------------------------------------------------------- widget or app (Plasma)
+def plasma_script(js):
+    """Run a Plasma desktop script (adds/removes panel widgets). Returns its output or None."""
+    for tool in ("qdbus-qt6", "qdbus6", "qdbus"):
+        if shutil.which(tool):
+            cmd = [tool, "org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript", js]
+            break
+    else:
+        if not shutil.which("gdbus"):
+            return None
+        cmd = ["gdbus", "call", "--session", "--dest", "org.kde.plasmashell", "--object-path",
+               "/PlasmaShell", "--method", "org.kde.PlasmaShell.evaluateScript", js]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return r.stdout if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def apply_mode(mode, launch_app=True):
+    """widget: panel widget, no app entry. app: app-menu entry (window + tray icon), no widget.
+    Returns an error text, or "" when it worked."""
+    if mode == "app":
+        APP_ENTRY.parent.mkdir(parents=True, exist_ok=True)
+        APP_ENTRY.write_text(
+            "[Desktop Entry]\nType=Application\nName=KDrop\n"
+            "GenericName=AirDrop file transfer\n"
+            "Comment=Send and receive files with iPhone, iPad and Mac\n"
+            f"Exec=plasmawindowed --statusnotifier {PLASMOID}\n"
+            f"Icon={PLASMOID}\nTerminal=false\nCategories=Network;FileTransfer;\n"
+            "Keywords=airdrop;iphone;ipad;share;send;\n")
+        WINDOWED_ENTRY.write_text(
+            "[Desktop Entry]\n# written by kdrop (app mode): KDrop's icon in the taskbar\n"
+            "Name=KDrop\nExec=/usr/bin/plasmawindowed\nTerminal=false\nNoDisplay=true\n"
+            f"Icon={PLASMOID}\nType=Application\nX-DBUS-StartupType=Unique\nInitialPreference=1\n"
+            "X-KDE-Wayland-Interfaces=org_kde_plasma_window_management,org_kde_kwin_keystate,"
+            "zkde_screencast_unstable_v1,org_kde_plasma_activation_feedback\n")
+        if launch_app and not app_running():
+            subprocess.Popen(["plasmawindowed", "--statusnotifier", PLASMOID], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.5)     # let the window appear before the widget (maybe us) goes away
+        out = plasma_script(f"""panels().forEach(function (p) {{
+            p.widgets("{PLASMOID}").forEach(function (w) {{ w.remove() }}) }}); print("ok")""")
+        return "" if out is not None else "Couldn't remove the panel widget. Remove it by hand."
+    APP_ENTRY.unlink(missing_ok=True)
+    try:
+        if "written by kdrop" in WINDOWED_ENTRY.read_text():
+            WINDOWED_ENTRY.unlink()
+    except OSError:
+        pass
+    # put the widget back next to the system tray of the first panel that has one
+    out = plasma_script(f"""var have = false;
+        panels().forEach(function (p) {{ if (p.widgets("{PLASMOID}").length) have = true }});
+        if (!have && panels().length) {{
+            var target = panels()[0];
+            panels().forEach(function (p) {{ if (p.widgets("org.kde.plasma.systemtray").length) target = p }});
+            target.addWidget("{PLASMOID}");
+        }}
+        print(have ? "present" : "added")""")
+    # close the app window last: when switching from inside it, this process is its child
+    subprocess.run(["pkill", "-f", f"plasmawindowed.* {PLASMOID}$"], capture_output=True)
+    return "" if out is not None else \
+        "Couldn't add the widget. Right-click the panel → Add Widgets… → KDrop."
+
+
+def app_running():
+    return subprocess.run(["pgrep", "-f", f"plasmawindowed.* {PLASMOID}$"],
+                          capture_output=True).returncode == 0
 
 
 # ---------------------------------------------------------------- utilities
@@ -710,6 +789,7 @@ def status():
            "host": display_name(conf), "hostname": os.uname().nodename,
            "owly": os.path.exists(OWLY)}
     out.update({k: conf[k] for k in SETTINGS})
+    out["plasma"] = bool(shutil.which("plasmawindowed"))
     out.update({k: conf[k] for k in LISTS})
     print(json.dumps(out, ensure_ascii=False))
 
@@ -770,15 +850,32 @@ def main(argv):
     if cmd == "settings":
         print(json.dumps(conf, indent=2, ensure_ascii=False))
         return 0
-    if cmd == "set" and len(rest) == 2 and rest[0] == "receive_minutes":   # old name
-        rest = ["receive_seconds", str(int(rest[1]) * 60)]
-    if cmd == "set" and len(rest) == 2 and rest[0] in SETTINGS:
-        try:
-            val = parse_duration(rest[1]) if rest[0] == "receive_seconds" and not rest[1].isdigit() else rest[1]
-            conf[rest[0]] = SETTINGS[rest[0]][1](val)
-        except ValueError as e:
-            print(f"bad value for {rest[0]}: {e}", file=sys.stderr)
-            return 2
+    if cmd == "set" and rest and len(rest) % 2 == 0:
+        # several pairs at once (the Save button): all are checked before any is saved,
+        # and a mode change is applied last, since it may remove the widget that asked
+        pairs = list(zip(rest[::2], rest[1::2]))
+        new_mode = None
+        for key, val in pairs:
+            if key == "receive_minutes":   # old name
+                key, val = "receive_seconds", str(int(val) * 60)
+            if key not in SETTINGS:
+                print(f"unknown setting: {key}", file=sys.stderr)
+                return 2
+            try:
+                if key == "receive_seconds" and not val.isdigit():
+                    val = parse_duration(val)
+                val = SETTINGS[key][1](val)
+            except ValueError as e:
+                print(f"bad value for {key}: {e}", file=sys.stderr)
+                return 2
+            if key == "mode":
+                new_mode = val
+            else:
+                conf[key] = val
+        save_conf(conf)
+        if new_mode and new_mode != conf["mode"]:
+            return main(["mode", new_mode])
+        return 0
     elif cmd == "trust" and rest:
         for lst in ("trusted", "devices"):
             if not in_list(rest[0], conf[lst]):
@@ -788,6 +885,19 @@ def main(argv):
     elif cmd == "forget" and rest:
         for lst in LISTS:
             conf[lst] = [d for d in conf[lst] if not same_name(d, rest[0])]
+    elif cmd == "mode" and rest[:1] in (["widget"], ["app"]):
+        conf["mode"] = rest[0]
+        save_conf(conf)
+        err = apply_mode(rest[0])
+        if err:
+            print(err, file=sys.stderr)
+            notify("KDrop", err, "dialog-warning")
+        return 1 if err else 0
+    elif cmd == "apply-mode":     # used by install.sh: set up whatever the saved mode is
+        err = apply_mode(conf["mode"], launch_app=False)
+        if err:
+            print(err, file=sys.stderr)
+        return 1 if err else 0
     elif cmd == "refresh-menu":
         pass
     else:
