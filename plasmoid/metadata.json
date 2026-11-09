@@ -4,7 +4,7 @@
     "KPlugin": {
         "Id": "io.github.erdeemaydin.kdrop",
         "Name": "KDrop",
-        "Description": "Send and receive files with iPhone, iPad and Mac over AirDrop",
+        "Description": "Send and receive files with iPhone, iPad and Mac (AirDrop-compatible)",
         "Icon": "io.github.erdeemaydin.kdrop",
         "Category": "Utilities",
         "Authors": [{ "Name": "Erdem Aydın" }],

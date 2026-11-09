@@ -247,7 +247,7 @@ def apply_mode(mode, launch_app=True):
         APP_ENTRY.parent.mkdir(parents=True, exist_ok=True)
         APP_ENTRY.write_text(
             "[Desktop Entry]\nType=Application\nName=KDrop\n"
-            "GenericName=AirDrop file transfer\n"
+            "GenericName=File Sharing with Apple Devices\n"
             "Comment=Send and receive files with iPhone, iPad and Mac\n"
             f"Exec=plasmawindowed --statusnotifier {PLASMOID}\n"
             f"Icon={PLASMOID}\nTerminal=false\nCategories=Network;FileTransfer;\n"

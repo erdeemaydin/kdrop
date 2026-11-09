@@ -2,7 +2,7 @@
 
 # KDrop
 
-**AirDrop for KDE Plasma** (and other Linux desktops). A panel widget for sending files to and receiving files from iPhone, iPad and Mac, using real AirDrop, with no app on the Apple device.
+**Send and receive files with iPhone, iPad and Mac from KDE Plasma** (and other Linux desktops), using AirDrop. KDrop is an AirDrop-compatible panel widget and app: nothing to install on the Apple device.
 
 <p>
   <img src="docs/main.png" width="440" alt="KDrop: two files picked, waiting for you to choose the device to send them to">
@@ -155,7 +155,11 @@ Settings live in `~/.config/kdrop.json`.
 - [owly](https://github.com/t4t5/owly) by t4t5: the AWDL and AirDrop implementation KDrop depends on (MIT).
 - AWDL and AirDrop on Linux were first made possible by the research behind [OWL](https://github.com/seemoo-lab/owl) and [OpenDrop](https://github.com/seemoo-lab/opendrop) (Secure Mobile Networking Lab, TU Darmstadt).
 
-KDrop is an independent project. It is not affiliated with, endorsed by or sponsored by Apple Inc. or KDE e.V. AirDrop, iPhone, iPad and Mac are trademarks of Apple Inc. KDE and Plasma are trademarks of KDE e.V.
+KDrop is an independent, unofficial project. It is not affiliated with, endorsed by or sponsored by Apple Inc. or KDE e.V.
+
+KDrop contains no Apple software. It talks to Apple devices only through owly, an independent open-source implementation of the protocols, so an Apple software update can break compatibility at any time.
+
+Apple, AirDrop, iPhone, iPad and Mac are trademarks of Apple Inc., registered in the U.S. and other countries and regions. KDE and Plasma are trademarks of KDE e.V. Other names may be trademarks of their respective owners and are used here only to describe compatibility.
 
 ## License
 
