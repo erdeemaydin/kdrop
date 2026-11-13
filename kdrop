@@ -749,6 +749,101 @@ def job_browse():
 
 
 # --------------------------------------------------------------- frontend
+PICK_PID = RUN / "pick-files.pid"
+
+
+def kdialog_env():
+    """Isolated XDG_CONFIG_HOME for kdialog so it does not inherit plasmashell's
+    oversized file-dialog icons or another app's maximized state, while still
+    keeping the user's KDE theme, colors, and Places."""
+    dconf = DATA_HOME / "kdrop" / "dialog-config"
+    dconf.mkdir(parents=True, exist_ok=True)
+    for name in ("kdeglobals", "breezerc", "klassyrc", "lightlyrc", "oxygenrc",
+                 "Kvantum", "qt6ct", "kioslaverc", "user-dirs.dirs", "Trolltech.conf"):
+        src = CONFIG_HOME / name
+        dst = dconf / name
+        if dst.is_symlink() and not dst.exists():
+            dst.unlink(missing_ok=True)
+        if src.exists() and not dst.exists():
+            try:
+                dst.symlink_to(src)
+            except OSError:
+                pass
+    env = dict(os.environ)
+    env["XDG_CONFIG_HOME"] = str(dconf)
+    return env, dconf / "kdialogrc"
+
+
+def has_saved_dialog_size(rc):
+    """True once kdialog has recorded a user-chosen FileDialogSize."""
+    try:
+        return rc.exists() and "[FileDialogSize]" in rc.read_text(errors="replace")
+    except OSError:
+        return False
+
+
+def cancel_pick():
+    """Close an open file-picker dialog if the KDrop popup was dismissed."""
+    try:
+        pid = int(PICK_PID.read_text().strip())
+    except (OSError, ValueError):
+        return 0
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        return 1
+    PICK_PID.unlink(missing_ok=True)
+    return 0
+
+
+def pick_dialog(kind, geom="", start_dir=""):
+    """Open an independent KDE file/folder chooser window and print JSON."""
+    if not shutil.which("kdialog"):
+        print("kdialog not found", file=sys.stderr)
+        return 127
+    env, rc = kdialog_env()
+    cmd = ["kdialog"]
+    if geom and re.fullmatch(r"\d+x\d+", geom) and not has_saved_dialog_size(rc):
+        cmd += ["--geometry", geom]
+    cmd += ["--icon", PLASMOID]
+    if kind == "folder":
+        cmd += ["--title", "Save received files to", "--getexistingdirectory"]
+        if start_dir:
+            cmd.append(start_dir)
+    else:
+        cmd += ["--title", "Choose files to send",
+                "--getopenfilename", "--multiple", "--separate-output"]
+        if not rc.exists():
+            cmd.append(str(HOME))
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    if kind == "files":
+        PICK_PID.write_text(f"{proc.pid}\n")
+    try:
+        out, err = proc.communicate()
+    finally:
+        if kind == "files":
+            try:
+                if PICK_PID.exists() and PICK_PID.read_text().strip() == str(proc.pid):
+                    PICK_PID.unlink(missing_ok=True)
+            except OSError:
+                pass
+    if proc.returncode in (1, -signal.SIGTERM, -signal.SIGKILL):
+        print(json.dumps({"cancelled": True, "urls": []}, ensure_ascii=False))
+        return 0
+    if proc.returncode != 0:
+        if err:
+            print(err, file=sys.stderr, end="")
+        return proc.returncode
+    if kind == "folder":
+        print(json.dumps({"path": out.strip()}, ensure_ascii=False))
+        return 0
+    urls = [pathlib.Path(p).as_uri() for p in out.splitlines() if p.strip()]
+    print(json.dumps({"urls": urls}, ensure_ascii=False))
+    return 0
+
+
 def launch(kind, args):
     """Run a job in its own systemd user unit, so it outlives the widget or Dolphin."""
     unit = JOB_UNITS[kind]
@@ -817,6 +912,11 @@ def main(argv):
         if kind == "receive":
             return job_receive(int(rest[0]) if rest else 0)   # seconds
         return job_browse()
+    if cmd == "_pick" and rest[:1] in (["files"], ["folder"]):
+        return pick_dialog(rest[0], rest[1] if len(rest) > 1 else "",
+                           rest[2] if len(rest) > 2 else "")
+    if cmd == "_cancel-pick":
+        return cancel_pick()
     if cmd == "--version":
         print(VERSION)
         return 0

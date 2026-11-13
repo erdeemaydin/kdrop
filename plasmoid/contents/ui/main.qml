@@ -19,6 +19,16 @@ PlasmoidItem {
                         receive_seconds: 180, dir: "", host: "", owly: true })
     // files waiting for you to click a device; nothing is sent before that click
     property var pending: []
+    property bool pinned: true
+    property bool pickingFiles: false
+    property bool pickingFolder: false
+    onExpandedChanged: {
+        if (expanded) {
+            pinned = true
+        } else if (pickingFiles) {
+            exec.connectSource(helper + " _cancel-pick #" + Date.now())
+        }
+    }
     readonly property url logo: Qt.resolvedUrl("../icons/kdrop.svg")
     // Anywhere but a panel (an app window via plasmawindowed, or the desktop) the header leaves
     // out logo and name: a window's title bar shows them already. (plasmawindowed reports its
@@ -36,8 +46,10 @@ PlasmoidItem {
 
     Plasmoid.icon: "io.github.erdeemaydin.kdrop"
     Plasmoid.status: busy || pending.length ? PlasmaCore.Types.ActiveStatus : PlasmaCore.Types.PassiveStatus
-    // the file and folder dialogs take focus; don't let that close the popup
-    hideOnWindowDeactivate: !fileDialog.visible && !folderDialog.visible && !settingsWindow.visible
+    // keep open by default (or while dialogs take focus) so files can be dragged from desktop/Dolphin
+    hideOnWindowDeactivate: !pinned && !pickingFiles && !pickingFolder
+                            && !fileDialog.visible && !folderDialog.visible && !settingsWindow.visible
+    expandedOnDragHover: true
     toolTipMainText: "KDrop"
     toolTipSubText: {
         const j = sendJob || recvJob || browseJob
@@ -96,7 +108,37 @@ PlasmoidItem {
         return s.substring(s.lastIndexOf("/") + 1)
     }
     function urlToPath(u) { return decodeURIComponent(String(u).replace(/^file:\/\//, "")) }
-    function chooseFolder() { folderDialog.open() }
+    function dialogGeom() {
+        const aw = Screen.desktopAvailableWidth || 1280
+        const ah = Screen.desktopAvailableHeight || 800
+        const w = Math.min(Math.max(480, Math.round(aw * 0.65)), 920, Math.max(320, aw - 64))
+        const h = Math.min(Math.max(360, Math.round(ah * 0.68)), 600, Math.max(240, ah - 64))
+        return w + "x" + h
+    }
+    function handlePick(source, data, onOk, fallback) {
+        if (data["exit code"] !== 0) {
+            console.warn("kdrop:", source, data.stderr)
+            fallback()
+            return false
+        }
+        try {
+            onOk(data.stdout ? JSON.parse(data.stdout) : null)
+            return true
+        } catch (e) {
+            console.warn("kdrop:", source, e)
+            return false
+        }
+    }
+    function pickFiles() {
+        if (root.sending || root.pickingFiles) return
+        root.pickingFiles = true
+        exec.connectSource(helper + " _pick files " + q(dialogGeom()) + " #" + Date.now())
+    }
+    function chooseFolder() {
+        if (root.pickingFolder) return
+        root.pickingFolder = true
+        exec.connectSource(helper + " _pick folder " + q(dialogGeom()) + " " + q(root.st.dir || "") + " #" + Date.now())
+    }
     function openSettings() {
         settingsWindow.show()
         settingsWindow.raise()
@@ -108,9 +150,23 @@ PlasmoidItem {
         engine: "executable"
         connectedSources: []
         onNewData: (source, data) => {
-            if (data["exit code"] !== 0) console.warn("kdrop:", source, data.stderr)
-            if (source.indexOf("kdrop\" status") >= 0 && data.stdout) {
-                try { root.st = JSON.parse(data.stdout) } catch (e) {}
+            if (source.indexOf("kdrop\" _pick files ") >= 0) {
+                root.pickingFiles = false
+                handlePick(source, data, res => {
+                    if (res && res.urls && res.urls.length) root.addFiles(res.urls)
+                }, () => { if (root.expanded) fileDialog.open() })
+            } else if (source.indexOf("kdrop\" _pick folder ") >= 0) {
+                root.pickingFolder = false
+                handlePick(source, data, res => {
+                    if (res && res.path && settingsLoader.item) {
+                        settingsLoader.item.change("dir", res.path)
+                    }
+                }, () => folderDialog.open())
+            } else {
+                if (data["exit code"] !== 0) console.warn("kdrop:", source, data.stderr)
+                if (source.indexOf("kdrop\" status") >= 0 && data.stdout) {
+                    try { root.st = JSON.parse(data.stdout) } catch (e) {}
+                }
             }
             disconnectSource(source)
         }
@@ -259,6 +315,18 @@ PlasmoidItem {
                     onClicked: root.openSettings()
                     PC3.ToolTip.text: "Settings"; PC3.ToolTip.visible: hovered
                 }
+                PC3.ToolButton {
+                    id: pinButton
+                    visible: !root.windowed
+                    icon.name: "window-pin"
+                    checkable: true
+                    checked: root.pinned
+                    onToggled: {
+                        root.pinned = checked
+                        checked = Qt.binding(() => root.pinned)
+                    }
+                    PC3.ToolTip.text: "Keep open"; PC3.ToolTip.visible: hovered
+                }
             }
         }
 
@@ -293,9 +361,9 @@ PlasmoidItem {
                     id: zoneMouse
                     anchors.fill: parent
                     hoverEnabled: true
-                    enabled: !root.sending
+                    enabled: !root.sending && !root.pickingFiles
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: fileDialog.open()
+                    onClicked: root.pickFiles()
                 }
                 DropArea {
                     id: zoneDrop
