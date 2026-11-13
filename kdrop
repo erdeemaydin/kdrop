@@ -154,7 +154,8 @@ def write_servicemenu(c):
     """Dolphin right-click menu: one entry per saved device, so you always see where it goes."""
     esc = lambda x: '"' + re.sub(r'(["`$\\])', r"\\\1", x) + '"'
     lines = ["[Desktop Entry]", "Type=Service",
-             "MimeType=application/octet-stream;inode/directory;",
+             "MimeType=all/all;all/allfiles;inode/directory;application/octet-stream;",
+             "X-KDE-Priority=TopLevel",
              "X-KDE-Submenu=Send via AirDrop"]
     devs = c["devices"]
     ids = [f"dev{i}" for i in range(len(devs))] or ["none"]
@@ -169,6 +170,8 @@ def write_servicemenu(c):
         SERVICEMENU.parent.mkdir(parents=True, exist_ok=True)
         SERVICEMENU.write_text("\n".join(lines) + "\n")
         SERVICEMENU.chmod(0o755)
+        if shutil.which("kbuildsycoca6"):
+            subprocess.run(["kbuildsycoca6"], capture_output=True)
     except OSError:
         pass
 
