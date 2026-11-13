@@ -19,12 +19,15 @@ PlasmoidItem {
                         receive_seconds: 180, dir: "", host: "", owly: true })
     // files waiting for you to click a device; nothing is sent before that click
     property var pending: []
+    property bool waitingOpen: false
+    property var appWindow: null
     readonly property url logo: Qt.resolvedUrl("../icons/kdrop.svg")
     // Anywhere but a panel (an app window via plasmawindowed, or the desktop) the header leaves
     // out logo and name: a window's title bar shows them already. (plasmawindowed reports its
     // form factor as Application or Planar depending on saved state, so test for a panel.)
     readonly property bool windowed: Plasmoid.formFactor !== PlasmaCore.Types.Horizontal
                                      && Plasmoid.formFactor !== PlasmaCore.Types.Vertical
+    onWindowedChanged: waitAppOpen()
 
     readonly property var sendJob: st.jobs.send || null
     readonly property var recvJob: st.jobs.receive || null
@@ -102,12 +105,33 @@ PlasmoidItem {
         settingsWindow.raise()
         settingsWindow.requestActivate()
     }
+    function waitAppOpen() {
+        if (!root.windowed || root.waitingOpen) return
+        root.waitingOpen = true
+        exec.connectSource(helper + " _wait-open #" + Date.now())
+    }
+    function showAppWindow() {
+        const w = root.appWindow || root.Window.window
+        if (!w) return
+        if (!w.visible) w.show()
+        w.raise()
+        w.requestActivate()
+    }
 
     P5Support.DataSource {
         id: exec
         engine: "executable"
         connectedSources: []
         onNewData: (source, data) => {
+            if (source.indexOf("kdrop\" _wait-open") >= 0) {
+                root.waitingOpen = false
+                if (data["exit code"] === 0) {
+                    if ((data.stdout || "").trim() === "show") root.showAppWindow()
+                    root.waitAppOpen()
+                }
+                disconnectSource(source)
+                return
+            }
             if (data["exit code"] !== 0) console.warn("kdrop:", source, data.stderr)
             if (source.indexOf("kdrop\" status") >= 0 && data.stdout) {
                 try { root.st = JSON.parse(data.stdout) } catch (e) {}
@@ -121,7 +145,10 @@ PlasmoidItem {
         onTriggered: root.poll()
     }
     Timer { id: refreshSoon; interval: 300; onTriggered: root.poll() }
-    Component.onCompleted: refreshSoon.start()
+    Component.onCompleted: {
+        refreshSoon.start()
+        root.waitAppOpen()
+    }
 
     FileDialog {
         id: fileDialog
@@ -229,6 +256,8 @@ PlasmoidItem {
         // popup at the size it last had, which would cut the bottom off once the page grew.
         readonly property real fitHeight: heading.implicitHeight + mainPage.implicitHeight
                                           + Kirigami.Units.largeSpacing * 2
+        Component.onCompleted: if (root.windowed && Window.window) root.appWindow = Window.window
+        Window.onWindowChanged: if (root.windowed && Window.window) root.appWindow = Window.window
         Layout.preferredWidth: Kirigami.Units.gridUnit * 22
         Layout.minimumWidth: Kirigami.Units.gridUnit * 18
         Layout.preferredHeight: fitHeight

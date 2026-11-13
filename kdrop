@@ -32,6 +32,7 @@ import select
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -53,6 +54,7 @@ OWLY = shutil.which("owly") or "/usr/bin/owly"
 SELF = str(pathlib.Path(__file__).resolve())
 PLASMOID = "io.github.erdeemaydin.kdrop"
 APP_ENTRY = DATA_HOME / f"applications/{PLASMOID}.desktop"
+APP_SOCK = RUN / "app-open.sock"
 # The app window belongs to plasmawindowed, so the taskbar looks up *its* launcher for the icon.
 # In app mode a user copy of that launcher carries KDrop's name and icon. (Any other widget run
 # with plasmawindowed would show KDrop's icon too; that's rare, and it goes in widget mode.)
@@ -249,8 +251,8 @@ def apply_mode(mode, launch_app=True):
             "[Desktop Entry]\nType=Application\nName=KDrop\n"
             "GenericName=File Sharing with Apple Devices\n"
             "Comment=Send and receive files with iPhone, iPad and Mac\n"
-            f"Exec=plasmawindowed --statusnotifier {PLASMOID}\n"
-            f"Icon={PLASMOID}\nTerminal=false\nCategories=Network;FileTransfer;\n"
+            f'Exec="{SELF}" open\n'
+            f"Icon={PLASMOID}\nTerminal=false\nStartupNotify=false\nCategories=Network;FileTransfer;\n"
             "Keywords=airdrop;iphone;ipad;share;send;\n")
         WINDOWED_ENTRY.write_text(
             "[Desktop Entry]\n# written by kdrop (app mode): KDrop's icon in the taskbar\n"
@@ -294,6 +296,53 @@ def apply_mode(mode, launch_app=True):
 def app_running():
     return subprocess.run(["pgrep", "-f", f"plasmawindowed.* {PLASMOID}$"],
                           capture_output=True).returncode == 0
+
+
+def open_app():
+    """Open KDrop's app window, or ask the already-running instance to show it."""
+    if app_running():
+        for _ in range(20):
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                    s.settimeout(1.0)
+                    s.connect(str(APP_SOCK))
+                    s.sendall(b"show\n")
+                return 0
+            except OSError:
+                time.sleep(0.05)
+    subprocess.Popen(["plasmawindowed", "--statusnotifier", PLASMOID], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return 0
+
+
+def wait_open():
+    """Wait once for `kdrop open` on APP_SOCK and print 'show' so the QML app can raise itself."""
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)   # PR_SET_PDEATHSIG
+    except Exception:
+        pass
+    orig_ppid = os.getppid()
+    APP_SOCK.unlink(missing_ok=True)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        srv.bind(str(APP_SOCK))
+        srv.listen(4)
+        while os.getppid() == orig_ppid:
+            readable, _, _ = select.select([srv], [], [], 1.0)
+            if not readable:
+                continue
+            conn, _ = srv.accept()
+            with conn:
+                msg = conn.recv(64).decode(errors="replace").strip()
+            if msg:
+                print(msg)
+                return 0
+        return 1
+    finally:
+        srv.close()
+        APP_SOCK.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------- utilities
@@ -817,6 +866,10 @@ def main(argv):
         if kind == "receive":
             return job_receive(int(rest[0]) if rest else 0)   # seconds
         return job_browse()
+    if cmd == "_wait-open":
+        return wait_open()
+    if cmd == "open":
+        return open_app()
     if cmd == "--version":
         print(VERSION)
         return 0
